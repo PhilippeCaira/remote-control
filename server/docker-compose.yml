@@ -1,0 +1,76 @@
+name: remote-control
+
+networks:
+  rustdesk-net:
+    driver: bridge
+
+services:
+  # All-in-one hbbs + hbbr + rustdesk-api via s6-overlay.
+  # Image source: https://github.com/lejianwen/rustdesk-server (AGPL-3.0)
+  # Exposes hbbs/hbbr ports directly on the host (NAT traversal requires it);
+  # the HTTP API (21114) is reached only through Caddy.
+  rustdesk:
+    image: lejianwen/rustdesk-server-s6:latest
+    container_name: remote-control-rustdesk
+    restart: unless-stopped
+    networks:
+      - rustdesk-net
+    environment:
+      TZ: ${TZ:-Europe/Brussels}
+
+      # hbbs/hbbr
+      RELAY: ${DOMAIN_RDV}:21117
+      ENCRYPTED_ONLY: "1"
+      MUST_LOGIN: ${MUST_LOGIN:-Y}
+
+      # rustdesk-api bundled service (points at itself)
+      RUSTDESK_API_RUSTDESK_ID_SERVER: ${DOMAIN_RDV}:21116
+      RUSTDESK_API_RUSTDESK_RELAY_SERVER: ${DOMAIN_RDV}:21117
+      RUSTDESK_API_RUSTDESK_API_SERVER: https://${DOMAIN_API}
+      RUSTDESK_API_KEY_FILE: /data/id_ed25519.pub
+      RUSTDESK_API_JWT_KEY: ${RUSTDESK_API_JWT_KEY:?JWT secret missing — set it in .env}
+      RUSTDESK_API_APP_REGISTER: "false"
+      RUSTDESK_API_APP_SHOW_SWAGGER: "0"
+      RUSTDESK_API_LANG: ${RUSTDESK_API_LANG:-en}
+    ports:
+      # hbbs: signaling (rendezvous)
+      - "21115:21115/tcp"
+      - "21116:21116/tcp"
+      - "21116:21116/udp"
+      # hbbr: relay
+      - "21117:21117/tcp"
+      - "21118:21118/tcp"
+      - "21119:21119/tcp"
+    expose:
+      # rustdesk-api: reached via Caddy only
+      - "21114"
+    volumes:
+      - ./volumes/rustdesk/server:/data
+      - ./volumes/rustdesk/api:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:21114/api/version || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: remote-control-caddy
+    restart: unless-stopped
+    networks:
+      - rustdesk-net
+    depends_on:
+      - rustdesk
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    environment:
+      DOMAIN_API: ${DOMAIN_API}
+      DOMAIN_DL: ${DOMAIN_DL}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy/data:/data
+      - ./volumes/caddy/config:/config
+      - ./volumes/downloads:/srv/downloads:ro

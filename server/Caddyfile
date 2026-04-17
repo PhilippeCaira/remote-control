@@ -1,0 +1,85 @@
+# Caddy reverse proxy for remote-control.
+#
+# Handles:
+#   - api.<your-domain>  -> rustdesk-api (admin UI + API + web client)
+#   - dl.<your-domain>   -> static file server for signed installers
+#
+# TLS is obtained automatically via Let's Encrypt (ACME HTTP-01) on first
+# request; certs are persisted under ./volumes/caddy/data.
+#
+# DNS is passed in via env from docker-compose (.env).
+{
+	email {$ACME_EMAIL}
+	# On-demand TLS is NOT enabled: the two hostnames are explicit below.
+}
+
+# ---------------------------------------------------------------------------
+# rustdesk-api: admin UI (/_admin/), web client (/), OIDC, device API.
+# ---------------------------------------------------------------------------
+{$DOMAIN_API} {
+	encode zstd gzip
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+
+	reverse_proxy rustdesk:21114 {
+		# Long poll / websocket tolerances
+		transport http {
+			read_timeout 5m
+			write_timeout 5m
+		}
+	}
+
+	# Modest hardening
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access-api.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# dl.<your-domain>: static installers (populated by deploy-downloads workflow).
+# ---------------------------------------------------------------------------
+{$DOMAIN_DL} {
+	encode zstd gzip
+
+	root * /srv/downloads
+	file_server {
+		precompressed gzip
+	}
+
+	# Friendly redirects: /windows -> /windows/latest.msi, etc.
+	@windows path /windows /windows/
+	redir @windows /windows/latest.msi 302
+	@macos path /macos /macos/
+	redir @macos /macos/latest.dmg 302
+	@linux path /linux /linux/
+	redir @linux /linux/latest.AppImage 302
+	@android path /android /android/
+	redir @android /android/latest.apk 302
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Cache-Control "public, max-age=3600"
+		-Server
+	}
+
+	log {
+		output file /data/access-dl.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}
