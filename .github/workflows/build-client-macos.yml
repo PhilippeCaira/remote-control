@@ -216,10 +216,66 @@ jobs:
           echo "APP_DIR=$app_dir" >> "$GITHUB_ENV"
 
       # --------------------------------------------------------------------
-      # Package as unsigned .dmg (Gatekeeper will flag on first launch
-      # until the signing+notarization jalon ships).
+      # Code sign (conditional) — uses rcodesign so we are independent
+      # of an Apple Silicon runner with a keychain. Gated on the
+      # APPLE_DEVELOPER_ID_CERT_BASE64 secret.
+      #
+      # Expected secrets (all required together):
+      #   APPLE_DEVELOPER_ID_CERT_BASE64     - base64 of the .p12 cert
+      #   APPLE_DEVELOPER_ID_CERT_PASSWORD
+      #   APPLE_TEAM_ID                      - from https://developer.apple.com/account
+      #   APPLE_APPLE_ID                     - email used on the Apple Dev account
+      #   APPLE_APP_SPECIFIC_PASSWORD        - app-specific password for notarytool
       # --------------------------------------------------------------------
-      - name: Package .dmg (unsigned)
+      - name: Setup signing credentials
+        id: signing
+        shell: bash
+        env:
+          CERT_BASE64:  ${{ secrets.APPLE_DEVELOPER_ID_CERT_BASE64 }}
+          CERT_PWD:     ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          TEAM_ID:      ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID:     ${{ secrets.APPLE_APPLE_ID }}
+          APP_PWD:      ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [[ -z "$CERT_BASE64" ]]; then
+              echo "APPLE_DEVELOPER_ID_CERT_BASE64 not set — skipping codesign + notarize"
+              echo "enabled=0" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          for v in CERT_PWD TEAM_ID APPLE_ID APP_PWD; do
+              if [[ -z "${!v:-}" ]]; then
+                  echo "::error::required secret missing: $v"
+                  exit 1
+              fi
+          done
+          cert_path="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$CERT_BASE64" | base64 --decode > "$cert_path"
+          echo "cert_path=$cert_path" >> "$GITHUB_OUTPUT"
+          echo "enabled=1" >> "$GITHUB_OUTPUT"
+
+      - name: Install rcodesign
+        if: steps.signing.outputs.enabled == '1'
+        run: cargo install apple-codesign --locked --version 0.29.0
+
+      - name: Codesign .app bundle
+        if: steps.signing.outputs.enabled == '1'
+        env:
+          CERT_PATH:     ${{ steps.signing.outputs.cert_path }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          rcodesign sign \
+              --p12-file "$CERT_PATH" \
+              --p12-password "$CERT_PASSWORD" \
+              --code-signature-flags runtime \
+              --team-name "$TEAM_ID" \
+              "$APP_DIR"
+
+      # --------------------------------------------------------------------
+      # Package .dmg. Done after codesign so the dmg contains the signed
+      # bundle.
+      # --------------------------------------------------------------------
+      - name: Package .dmg
         env:
           BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -237,6 +293,34 @@ jobs:
               "$OUT" \
               "$APP_DIR"
           echo "ARTIFACT_PATH=$OUT" >> "$GITHUB_ENV"
+
+      - name: Codesign .dmg
+        if: steps.signing.outputs.enabled == '1'
+        env:
+          CERT_PATH:     ${{ steps.signing.outputs.cert_path }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          rcodesign sign \
+              --p12-file "$CERT_PATH" \
+              --p12-password "$CERT_PASSWORD" \
+              "$ARTIFACT_PATH"
+
+      - name: Notarize .dmg
+        if: steps.signing.outputs.enabled == '1'
+        env:
+          TEAM_ID:      ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID:     ${{ secrets.APPLE_APPLE_ID }}
+          APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          creds="$RUNNER_TEMP/notary-creds.json"
+          umask 077
+          printf '{"team_id":"%s","apple_id":"%s","password":"%s"}\n' \
+              "$TEAM_ID" "$APPLE_ID" "$APP_PASSWORD" > "$creds"
+          rcodesign notary-submit \
+              --api-key-path "$creds" \
+              --staple \
+              "$ARTIFACT_PATH"
+          rm -f "$creds"
 
       - name: Upload artefact
         uses: actions/upload-artifact@v4
