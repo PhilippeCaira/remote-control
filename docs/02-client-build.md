@@ -28,6 +28,42 @@ missing. The full list with explanations is in
 > and can live in GitHub **Variables** (visible in logs), which makes
 > them easier to track across revisions.
 
+### Register everything with one script
+
+From a shell authenticated against your GitHub organisation (`gh auth
+login` with `repo` and `admin:org_hook` scopes), run the one-shot
+configuration below. The secret values are read from `client/.env`
+(same file you use for local builds), which must exist and contain
+real values — placeholders will produce a working CI but
+misconfigured binaries.
+
+```bash
+# Load client/.env into the shell (same values as a local build).
+set -a; source client/.env; set +a
+
+REPO=<your-org>/remote-control
+
+# Secrets (kept out of logs)
+gh secret set RENDEZVOUS_SERVER --repo "$REPO" --body "$RENDEZVOUS_SERVER"
+gh secret set RS_PUB_KEY        --repo "$REPO" --body "$RS_PUB_KEY"
+gh secret set API_SERVER        --repo "$REPO" --body "$API_SERVER"
+
+# Variables (visible in logs — fine for branding)
+gh variable set BRAND_APP_NAME        --repo "$REPO" --body "$BRAND_APP_NAME"
+gh variable set BRAND_ORG             --repo "$REPO" --body "$BRAND_ORG"
+gh variable set BRAND_ANDROID_APP_ID  --repo "$REPO" --body "$BRAND_ANDROID_APP_ID"
+gh variable set BRAND_MACOS_BUNDLE_ID --repo "$REPO" --body "$BRAND_MACOS_BUNDLE_ID"
+gh variable set BRAND_COPYRIGHT       --repo "$REPO" --body "$BRAND_COPYRIGHT"
+
+# Verify
+gh secret list   --repo "$REPO"
+gh variable list --repo "$REPO"
+```
+
+The first workflow run (push a tag or click "Run workflow") will gate
+on the presence of all eight values and fail fast with a clear
+message if any is missing.
+
 ## How the substitution works
 
 `apply-branding.sh` rewrites the upstream source tree in place. Each

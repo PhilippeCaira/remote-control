@@ -1,0 +1,7 @@
+# Reproducibility pin.
+# The client/upstream/ subtree was imported from rustdesk 1.4.6, which is
+# built upstream with Rust 1.75 (see libs/hbb_common and the upstream CI
+# matrix). Bump in lockstep with the upstream pin.
+[toolchain]
+channel = "1.75"
+components = ["rustfmt", "clippy"]
