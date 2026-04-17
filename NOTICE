@@ -1,0 +1,45 @@
+remote-control
+==============
+
+This product includes software developed as a derivative work based on
+RustDesk, an open-source remote desktop software.
+
+    RustDesk
+    https://github.com/rustdesk/rustdesk
+    Copyright (c) 2020 Purslane Ltd.
+    Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+The unmodified RustDesk source code is imported via `git subtree` under
+`client/upstream/` at a pinned upstream tag. A summary of modifications
+made in this repository is maintained in `CHANGES.md`.
+
+Bundled server components
+-------------------------
+
+The server stack distributes container images published by third parties:
+
+    lejianwen/rustdesk-server
+    https://github.com/lejianwen/rustdesk-server
+    Licensed under AGPL-3.0.
+
+    lejianwen/rustdesk-api
+    https://github.com/lejianwen/rustdesk-api
+    Licensed under AGPL-3.0.
+
+These images are pulled at runtime by Docker Compose and are not modified.
+
+License of this work
+--------------------
+
+The combined work distributed under the name `remote-control` is licensed
+under the GNU Affero General Public License v3.0. See `LICENSE` for the
+full text.
+
+Corresponding Source
+--------------------
+
+In accordance with AGPL-3.0 section 13, the Corresponding Source of any
+binaries distributed from this project (GitHub Releases, download portal,
+or any network-accessible service running this software) is available in
+this public repository. Each release tag includes a `source.tar.gz`
+archive or an explicit reference to the immutable source commit.

@@ -1,0 +1,55 @@
+# Docker Compose runtime data (contains hbbs private keys, API DB, Caddy certs)
+server/volumes/
+server/.env
+!server/.env.example
+
+# Upstream subtree working state
+client/upstream/.git/
+client/upstream/build/
+client/upstream/target/
+client/upstream/flutter/build/
+client/upstream/flutter/.dart_tool/
+client/upstream/flutter/.flutter-plugins*
+client/upstream/flutter/ios/Pods/
+client/upstream/flutter/macos/Pods/
+client/upstream/flutter/android/.gradle/
+client/upstream/flutter/android/local.properties
+client/upstream/vcpkg/
+client/upstream/.cargo/
+
+# Branding: allow assets, ignore editor cruft
+client/branding/**/*.xcf
+client/branding/**/Thumbs.db
+
+# Build artefacts from local rebuild
+dist/
+out/
+*.msi
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+*.apk
+
+# Secrets & keys never committed
+*.pem
+*.key
+!client/upstream/**/*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+
+# Editor / OS / harness
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Language-specific
+__pycache__/
+*.pyc
+node_modules/
