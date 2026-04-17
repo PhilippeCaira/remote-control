@@ -1,12 +1,26 @@
 name: Build client (macOS)
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build"
+        type: string
+        required: false
+        default: ""
+      release_tag:
+        description: "Release tag attached to the artefact name"
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
     inputs:
       ref:
         description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+      release_tag:
+        description: "Tag to use in the artefact filename"
         required: false
         default: ""
 
@@ -208,9 +222,10 @@ jobs:
       - name: Package .dmg (unsigned)
         env:
           BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          SHA="${GITHUB_SHA:0:7}"
-          OUT="${BRAND_APP_NAME}-macos-${{ matrix.job.arch }}-${SHA}.dmg"
+          tag="${RELEASE_TAG:-${GITHUB_SHA:0:7}}"
+          OUT="${BRAND_APP_NAME}-macos-${{ matrix.job.arch }}-${tag}.dmg"
           # Workaround: create-dmg occasionally hits an unmount race.
           CREATE_DMG="$(readlink -f "$(command -v create-dmg)")"
           sed -i '' -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG" || true

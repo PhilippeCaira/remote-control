@@ -1,12 +1,26 @@
 name: Build client (Windows)
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build"
+        type: string
+        required: false
+        default: ""
+      release_tag:
+        description: "Release tag attached to the artefact name"
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
     inputs:
       ref:
         description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+      release_tag:
+        description: "Tag to use in the artefact filename"
         required: false
         default: ""
 
@@ -191,9 +205,10 @@ jobs:
         shell: pwsh
         env:
           BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          $sha = "${env:GITHUB_SHA}".Substring(0,7)
-          $out = "${env:BRAND_APP_NAME}-windows-x64-$sha.zip"
+          $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { "${env:GITHUB_SHA}".Substring(0,7) }
+          $out = "${env:BRAND_APP_NAME}-windows-x64-$tag.zip"
           Compress-Archive `
               -Path "client/upstream/flutter/build/windows/x64/runner/Release/*" `
               -DestinationPath "$out" `

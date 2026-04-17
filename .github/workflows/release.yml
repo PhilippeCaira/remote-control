@@ -1,0 +1,180 @@
+name: Release
+
+# Triggered by a version tag. Orchestrates the four per-platform
+# build workflows, collects every artefact, computes checksums, and
+# publishes a GitHub Release with the full installer set attached.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or ref to release (e.g. v0.1.0). Leave blank to use the current ref."
+        required: false
+        default: ""
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # required by softprops/action-gh-release
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Resolve the release tag once, so every downstream job filenames its
+  # artefacts consistently.
+  # --------------------------------------------------------------------------
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - id: resolve
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ inputs.ref }}
+        run: |
+          if [[ -n "$DISPATCH_REF" ]]; then
+              ref="$DISPATCH_REF"
+              tag="$DISPATCH_REF"
+          else
+              ref="${GITHUB_REF}"
+              tag="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Releasing tag=$tag from ref=$ref"
+
+  # --------------------------------------------------------------------------
+  # Per-platform builds run in parallel.
+  # --------------------------------------------------------------------------
+  linux:
+    name: Build Linux
+    needs: prepare
+    uses: ./.github/workflows/build-client-linux.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  windows:
+    name: Build Windows
+    needs: prepare
+    uses: ./.github/workflows/build-client-windows.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  macos:
+    name: Build macOS
+    needs: prepare
+    uses: ./.github/workflows/build-client-macos.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  android:
+    name: Build Android
+    needs: prepare
+    uses: ./.github/workflows/build-client-android.yml
+    with:
+      ref: ${{ needs.prepare.outputs.ref }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # Gather all artefacts, checksum them, draft the release.
+  # --------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, linux, windows, macos, android]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (for NOTICE / CHANGES in release body)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download all artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artefacts
+        run: ls -la dist/
+
+      - name: Compute SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- * | tee SHA256SUMS.txt
+
+      - name: Build release body
+        id: body
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          {
+            echo "## ${TAG}"
+            echo
+            echo "Self-hosted RustDesk client, built from the pinned upstream"
+            echo "recorded in \`client/upstream/.upstream-ref\`."
+            echo
+            echo "### Downloads"
+            echo
+            echo "| Platform | File |"
+            echo "|---|---|"
+            for f in dist/*.zip dist/*.dmg dist/*.apk dist/*.tar.gz; do
+                [[ -f "$f" ]] || continue
+                name=$(basename "$f")
+                case "$name" in
+                    *windows*) plat="Windows (x64)";;
+                    *macos*x86_64*) plat="macOS (Intel)";;
+                    *macos*aarch64*) plat="macOS (Apple Silicon)";;
+                    *linux*) plat="Linux (x64)";;
+                    *android*arm64*) plat="Android (arm64)";;
+                    *android*armeabi*) plat="Android (armv7)";;
+                    *) plat="$name";;
+                esac
+                echo "| ${plat} | \`${name}\` |"
+            done
+            echo
+            echo "### Verification"
+            echo
+            echo "Check \`SHA256SUMS.txt\` against the files above:"
+            echo
+            echo '```'
+            echo "sha256sum -c SHA256SUMS.txt"
+            echo '```'
+            echo
+            echo "### Upstream attribution"
+            echo
+            echo "Based on [RustDesk](https://github.com/rustdesk/rustdesk),"
+            echo "Copyright (c) 2020 Purslane Ltd., licensed under AGPL-3.0."
+            echo "Modifications are documented in"
+            echo "[CHANGES.md](./CHANGES.md)."
+          } > release_body.md
+          echo "path=release_body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          body_path: ${{ steps.body.outputs.path }}
+          draft: false
+          prerelease: ${{ contains(needs.prepare.outputs.tag, '-rc') || contains(needs.prepare.outputs.tag, '-alpha') || contains(needs.prepare.outputs.tag, '-beta') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/*.dmg
+            dist/*.apk
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt

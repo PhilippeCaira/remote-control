@@ -1,12 +1,26 @@
 name: Build client (Android)
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build"
+        type: string
+        required: false
+        default: ""
+      release_tag:
+        description: "Release tag attached to the artefact name"
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
     inputs:
       ref:
         description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+      release_tag:
+        description: "Tag to use in the artefact filename"
         required: false
         default: ""
 
@@ -257,6 +271,7 @@ jobs:
         shell: bash
         env:
           BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           src_apk=$(find client/upstream/flutter/build/app/outputs/flutter-apk \
                     -maxdepth 2 -name "*-release.apk" | head -1)
@@ -265,8 +280,8 @@ jobs:
               find client/upstream/flutter/build/app -maxdepth 5 -name "*.apk"
               exit 1
           fi
-          sha="${GITHUB_SHA:0:7}"
-          out="${BRAND_APP_NAME}-android-${{ matrix.job.arch }}-${sha}.apk"
+          tag="${RELEASE_TAG:-${GITHUB_SHA:0:7}}"
+          out="${BRAND_APP_NAME}-android-${{ matrix.job.arch }}-${tag}.apk"
           cp "$src_apk" "$out"
           echo "ARTIFACT_PATH=$out" >> "$GITHUB_ENV"
 

@@ -1,12 +1,26 @@
 name: Build client (Linux)
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build"
+        type: string
+        required: false
+        default: ""
+      release_tag:
+        description: "Release tag attached to the artefact name (e.g. v0.1.0)"
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
     inputs:
       ref:
         description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+      release_tag:
+        description: "Tag to use in the artefact filename"
         required: false
         default: ""
 
@@ -192,9 +206,11 @@ jobs:
       - name: Package artefact
         env:
           BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           cd client/upstream/flutter/build/linux/x64/release
-          tarball="${BRAND_APP_NAME}-linux-x64-${GITHUB_SHA::7}.tar.gz"
+          tag="${RELEASE_TAG:-${GITHUB_SHA::7}}"
+          tarball="${BRAND_APP_NAME}-linux-x64-${tag}.tar.gz"
           tar -czf "$GITHUB_WORKSPACE/$tarball" bundle
           echo "ARTIFACT_PATH=$tarball" >> "$GITHUB_ENV"
 
