@@ -1,0 +1,279 @@
+name: Build client (Android)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  NDK_VERSION: "r27c"
+  CARGO_NDK_VERSION: "3.1.2"
+  JAVA_VERSION: "17"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Android ${{ matrix.job.arch }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: arm64-v8a,   target: aarch64-linux-android,     android_target: arm64-v8a,   flutter_target: android-arm64 }
+          - { arch: armeabi-v7a, target: armv7-linux-androideabi,   android_target: armeabi-v7a, flutter_target: android-arm   }
+
+    steps:
+      # --------------------------------------------------------------------
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: false
+
+      # --------------------------------------------------------------------
+      - name: Verify build env contract
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER:     ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY:            ${{ secrets.RS_PUB_KEY }}
+          API_SERVER:            ${{ secrets.API_SERVER }}
+          BRAND_APP_NAME:        ${{ vars.BRAND_APP_NAME }}
+          BRAND_ORG:             ${{ vars.BRAND_ORG }}
+          BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
+          BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
+          BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+        run: |
+          missing=()
+          for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
+                   BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
+                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT; do
+              [[ -n "${!v}" ]] || missing+=("$v")
+          done
+          if (( ${#missing[@]} )); then
+              echo "::error::missing secrets/variables: ${missing[*]}"
+              echo "See docs/02-client-build.md for setup."
+              exit 1
+          fi
+          echo "all 8 required values are set"
+
+      # --------------------------------------------------------------------
+      # Host-side deps (build_android_deps.sh needs clang, nasm, …).
+      # --------------------------------------------------------------------
+      - name: Install host build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              clang cmake curl git ninja-build pkg-config \
+              nasm gcc-multilib g++-multilib \
+              openjdk-${{ env.JAVA_VERSION }}-jdk-headless \
+              libc6-dev libclang-dev libunwind-dev \
+              libgtk-3-dev libpango1.0-dev libglib2.0-dev \
+              libasound2-dev libpulse-dev \
+              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+              libayatana-appindicator3-dev \
+              libxdo-dev libxfixes-dev libxrandr-dev libxcb1-dev \
+              libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+              libpam0g-dev libudev-dev libva-dev tree wget
+
+      # --------------------------------------------------------------------
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+          cache-key: flutter-android-${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter SDK
+        shell: bash
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          patch_file="client/upstream/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if [[ -f "$patch_file" && "${FLUTTER_VERSION}" == "3.24.5" ]]; then
+            cp "$patch_file" "$flutter_root/"
+            pushd "$flutter_root" >/dev/null
+            git apply "$(basename "$patch_file")" || echo "::warning::flutter SDK patch already applied or does not apply"
+            popd >/dev/null
+          fi
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      # --------------------------------------------------------------------
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/upstream
+          shared-key: android-${{ matrix.job.arch }}
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+
+      # --------------------------------------------------------------------
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install vcpkg dependencies (Android triplet)
+        working-directory: client/upstream
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: ./flutter/build_android_deps.sh ${{ matrix.job.android_target }}
+
+      # --------------------------------------------------------------------
+      # Apply branding.
+      # --------------------------------------------------------------------
+      - name: Apply branding
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER:     ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY:            ${{ secrets.RS_PUB_KEY }}
+          API_SERVER:            ${{ secrets.API_SERVER }}
+          BRAND_APP_NAME:        ${{ vars.BRAND_APP_NAME }}
+          BRAND_ORG:             ${{ vars.BRAND_ORG }}
+          BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
+          BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
+          BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+        run: client/scripts/apply-branding.sh
+
+      # --------------------------------------------------------------------
+      # Build librustdesk.so via cargo-ndk, without --hwcodec (custom
+      # Flutter engine required; out of scope for v0). Upstream's
+      # ./flutter/ndk_arm64.sh pins --features flutter,hwcodec — we
+      # inline the command to drop hwcodec.
+      # --------------------------------------------------------------------
+      - name: Build librustdesk.so
+        working-directory: client/upstream
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          cargo ndk --platform 21 --target ${{ matrix.job.target }} build \
+              --release --features flutter
+
+          mkdir -p "./flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}"
+          # Upstream ships the library as liblibrustdesk.so; Flutter loads
+          # it under the name librustdesk.so.
+          cp "./target/${{ matrix.job.target }}/release/liblibrustdesk.so" \
+             "./flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}/librustdesk.so"
+
+          # C++ shared runtime must ride along for some NDK libs.
+          host_tag=linux-x86_64
+          case "${{ matrix.job.target }}" in
+              aarch64-linux-android)   triple=aarch64-linux-android ;;
+              armv7-linux-androideabi) triple=arm-linux-androideabi ;;
+          esac
+          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${host_tag}/sysroot/usr/lib/${triple}/libc++_shared.so" \
+             "./flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}/"
+
+      # --------------------------------------------------------------------
+      # Build APK.
+      # The real release signing identity lives in Android Keystore
+      # secrets and will be wired in by a later jalon. For v0 we reuse
+      # the Gradle "debug" signing config so the APK installs but is
+      # clearly marked as debug-signed.
+      # --------------------------------------------------------------------
+      - name: Build APK (debug-signed for v0)
+        working-directory: client/upstream
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-${{ env.JAVA_VERSION }}-openjdk-amd64
+        run: |
+          export PATH="$JAVA_HOME/bin:$PATH"
+          # Increase Gradle JVM memory for CI stability.
+          sed -i 's/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g' \
+              ./flutter/android/gradle.properties
+
+          # v0 safeguard: use debug signing until ANDROID_KEYSTORE secret
+          # is wired in (idempotent — re-running the sed is a no-op).
+          sed -i 's/signingConfigs\.release/signingConfigs.debug/g' \
+              ./flutter/android/app/build.gradle
+
+          pushd flutter >/dev/null
+          flutter build apk --release \
+              --target-platform ${{ matrix.job.flutter_target }} \
+              --split-per-abi
+          popd >/dev/null
+
+      # --------------------------------------------------------------------
+      # Verify hardcoded values are present in librustdesk.so (APK is
+      # zip-compressed so we can't `strings` it directly).
+      # --------------------------------------------------------------------
+      - name: Verify hardcoded values
+        shell: bash
+        env:
+          EXPECT_RENDEZVOUS: ${{ secrets.RENDEZVOUS_SERVER }}
+          EXPECT_RELAY:      ${{ secrets.RENDEZVOUS_SERVER }}:21117
+          EXPECT_API:        ${{ secrets.API_SERVER }}
+          EXPECT_RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+        run: |
+          so_path="client/upstream/flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}/librustdesk.so"
+          [[ -f "$so_path" ]] || { echo "::error::librustdesk.so missing at $so_path"; exit 1; }
+          client/scripts/verify-hardcoded.sh "$so_path"
+
+      # --------------------------------------------------------------------
+      # Locate and rename APK.
+      # --------------------------------------------------------------------
+      - name: Stage APK
+        shell: bash
+        env:
+          BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+        run: |
+          src_apk=$(find client/upstream/flutter/build/app/outputs/flutter-apk \
+                    -maxdepth 2 -name "*-release.apk" | head -1)
+          if [[ -z "$src_apk" ]]; then
+              echo "::error::no APK produced"
+              find client/upstream/flutter/build/app -maxdepth 5 -name "*.apk"
+              exit 1
+          fi
+          sha="${GITHUB_SHA:0:7}"
+          out="${BRAND_APP_NAME}-android-${{ matrix.job.arch }}-${sha}.apk"
+          cp "$src_apk" "$out"
+          echo "ARTIFACT_PATH=$out" >> "$GITHUB_ENV"
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.job.arch }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 14
+          if-no-files-found: error
