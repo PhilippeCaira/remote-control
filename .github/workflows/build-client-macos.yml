@@ -1,0 +1,232 @@
+name: Build client (macOS)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # macOS requires a newer Rust than Linux/Windows because upstream's
+  # cidre dependency requires 1.81+. See MAC_RUST_VERSION comment in
+  # client/upstream/.github/workflows/flutter-build.yml.
+  RUST_VERSION: "1.81"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  NASM_VERSION: "2.16.03"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: macOS ${{ matrix.job.arch }}
+    runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: x86_64,  os: macos-15-intel, target: x86_64-apple-darwin,  vcpkg-triplet: x64-osx }
+          - { arch: aarch64, os: macos-14,       target: aarch64-apple-darwin, vcpkg-triplet: arm64-osx }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: false
+
+      # --------------------------------------------------------------------
+      - name: Verify build env contract
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER:     ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY:            ${{ secrets.RS_PUB_KEY }}
+          API_SERVER:            ${{ secrets.API_SERVER }}
+          BRAND_APP_NAME:        ${{ vars.BRAND_APP_NAME }}
+          BRAND_ORG:             ${{ vars.BRAND_ORG }}
+          BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
+          BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
+          BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+        run: |
+          missing=()
+          for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
+                   BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
+                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT; do
+              [[ -n "${!v}" ]] || missing+=("$v")
+          done
+          if (( ${#missing[@]} )); then
+              echo "::error::missing secrets/variables: ${missing[*]}"
+              echo "See docs/02-client-build.md for setup."
+              exit 1
+          fi
+          echo "all 8 required values are set"
+
+      # --------------------------------------------------------------------
+      # System deps.
+      # NASM 2.16 (NOT 3.x via brew — incompatible CLI, breaks aom).
+      # --------------------------------------------------------------------
+      - name: Install build runtime (brew)
+        run: |
+          brew install llvm create-dmg
+          command -v pkg-config >/dev/null || brew install pkg-config
+
+      - name: Install NASM 2.16
+        run: |
+          curl -fsSLO "https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/macosx/nasm-${NASM_VERSION}-macosx.zip"
+          unzip -q "nasm-${NASM_VERSION}-macosx.zip"
+          sudo cp "nasm-${NASM_VERSION}/nasm" /usr/local/bin/nasm
+          nasm --version
+
+      # --------------------------------------------------------------------
+      # Rust + Flutter + vcpkg.
+      # --------------------------------------------------------------------
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/upstream
+          shared-key: ${{ matrix.job.os }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+          cache-key: flutter-${{ matrix.job.os }}-${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter SDK
+        shell: bash
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          patch_file="client/upstream/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if [[ -f "$patch_file" && "${FLUTTER_VERSION}" == "3.24.5" ]]; then
+            cp "$patch_file" "$flutter_root/"
+            pushd "$flutter_root" >/dev/null
+            git apply "$(basename "$patch_file")" || echo "::warning::flutter SDK patch already applied or does not apply"
+            popd >/dev/null
+          fi
+          # Upstream workaround for flutter/flutter#133533 (pointer events
+          # freeze on macOS when window loses focus).
+          bind="$(dirname "$(command -v flutter)")/../packages/flutter/lib/src/scheduler/binding.dart"
+          if [[ -f "$bind" ]]; then
+              sed -i '' -e 's|_setFramesEnabledState(false);|//_setFramesEnabledState(false);|g' "$bind"
+          fi
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install vcpkg dependencies
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.job.vcpkg-triplet }}
+        run: |
+          "$VCPKG_ROOT/vcpkg" install libvpx libyuv opus aom
+          echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------------------------
+      - name: Apply branding
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER:     ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY:            ${{ secrets.RS_PUB_KEY }}
+          API_SERVER:            ${{ secrets.API_SERVER }}
+          BRAND_APP_NAME:        ${{ vars.BRAND_APP_NAME }}
+          BRAND_ORG:             ${{ vars.BRAND_ORG }}
+          BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
+          BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
+          BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+        run: client/scripts/apply-branding.sh
+
+      # --------------------------------------------------------------------
+      # Build.
+      # arm64-only upstream note (commented out for v0): lowering
+      # MACOSX_DEPLOYMENT_TARGET to 12.3 to widen the supported macOS
+      # range. Default Flutter target is recent enough for Apple Silicon.
+      # --hwcodec skipped (custom engine); --screencapturekit only on arm.
+      # --------------------------------------------------------------------
+      - name: Build
+        working-directory: client/upstream
+        env:
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          EXTRA=""
+          [[ "${{ matrix.job.arch }}" == "aarch64" ]] && EXTRA="--screencapturekit"
+          python3 build.py --flutter --unix-file-copy-paste $EXTRA
+
+      # --------------------------------------------------------------------
+      # Verify hardcoded values inside the .app bundle.
+      # --------------------------------------------------------------------
+      - name: Verify hardcoded values
+        shell: bash
+        env:
+          EXPECT_RENDEZVOUS: ${{ secrets.RENDEZVOUS_SERVER }}
+          EXPECT_RELAY:      ${{ secrets.RENDEZVOUS_SERVER }}:21117
+          EXPECT_API:        ${{ secrets.API_SERVER }}
+          EXPECT_RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+        run: |
+          # GNU binutils' `strings` is not installed by default; the
+          # `strings` from llvm (installed via brew) works and is on PATH
+          # at $(brew --prefix llvm)/bin — but the xcode bundled `strings`
+          # is already in /usr/bin and handles Mach-O correctly.
+          app_dir=$(ls -d client/upstream/flutter/build/macos/Build/Products/Release/*.app 2>/dev/null | head -1)
+          if [[ -z "$app_dir" ]]; then
+              echo "::error::no .app bundle produced"
+              find client/upstream/flutter/build/macos -maxdepth 6 -name '*.app' -o -name '*.dylib' | head
+              exit 1
+          fi
+          echo "app bundle: $app_dir"
+          # Scan the main binary + embedded dylibs / frameworks.
+          exe="$app_dir/Contents/MacOS/$(basename "$app_dir" .app)"
+          mapfile -t targets < <(
+              printf '%s\n' "$exe"
+              find "$app_dir" -type f \( -name '*.dylib' -o -path '*/Frameworks/*' \) 2>/dev/null
+          )
+          client/scripts/verify-hardcoded.sh "${targets[@]}"
+          echo "APP_DIR=$app_dir" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------------------------
+      # Package as unsigned .dmg (Gatekeeper will flag on first launch
+      # until the signing+notarization jalon ships).
+      # --------------------------------------------------------------------
+      - name: Package .dmg (unsigned)
+        env:
+          BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+        run: |
+          SHA="${GITHUB_SHA:0:7}"
+          OUT="${BRAND_APP_NAME}-macos-${{ matrix.job.arch }}-${SHA}.dmg"
+          # Workaround: create-dmg occasionally hits an unmount race.
+          CREATE_DMG="$(readlink -f "$(command -v create-dmg)")"
+          sed -i '' -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG" || true
+          create-dmg \
+              --icon "$(basename "$APP_DIR")" 200 190 \
+              --hide-extension "$(basename "$APP_DIR")" \
+              --window-size 800 400 \
+              --app-drop-link 600 185 \
+              "$OUT" \
+              "$APP_DIR"
+          echo "ARTIFACT_PATH=$OUT" >> "$GITHUB_ENV"
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.job.arch }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 14
+          if-no-files-found: error
