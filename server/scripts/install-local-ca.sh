@@ -75,14 +75,22 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Verify from the host.
+# 5. Verify from the host. Caddy may be running on a non-standard port when
+#    80/443 are already taken — read it from the override file.
 # ---------------------------------------------------------------------------
-if curl -sSf --max-time 5 https://api.rdc.local/api/version >/dev/null; then
-    log "verified: https://api.rdc.local/api/version is reachable and trusted"
+HTTPS_PORT=$(awk '/^[[:space:]]*-[[:space:]]*"127\.0\.0\.1:[0-9]+:443/ {
+    match($0, /:[0-9]+:443/);
+    s=substr($0, RSTART+1, RLENGTH-5); print s; exit
+}' docker-compose.override.yml 2>/dev/null || true)
+HTTPS_PORT=${HTTPS_PORT:-443}
+API_URL="https://api.rdc.local:${HTTPS_PORT}"
+
+if curl -sSf --max-time 5 "${API_URL}/api/version" >/dev/null; then
+    log "verified: ${API_URL}/api/version is reachable and trusted"
 else
-    log "WARN: https://api.rdc.local/api/version did not respond (yet?)"
+    log "WARN: ${API_URL}/api/version did not respond (yet?)"
     log "      - confirm: docker compose ps  -> caddy+rustdesk healthy"
-    log "      - confirm: curl -vk https://api.rdc.local/api/version"
+    log "      - confirm: curl -vk ${API_URL}/api/version"
 fi
 
 cat <<EOF
@@ -90,12 +98,12 @@ cat <<EOF
 ================================================================================
  Next steps
 --------------------------------------------------------------------------------
- 1. Web admin:  https://api.rdc.local/_admin/
+ 1. Web admin:  ${API_URL}/_admin/
  2. Record the pubkey printed by server/scripts/init-keys.sh — you will
     paste it into client/.env under RS_PUB_KEY.
  3. For the client build, use:
        RENDEZVOUS_SERVER=rdv.rdc.local
-       API_SERVER=https://api.rdc.local
+       API_SERVER=${API_URL}
        RS_PUB_KEY=<the pubkey>
  4. To roll everything back:  server/scripts/uninstall-local-ca.sh
 ================================================================================
