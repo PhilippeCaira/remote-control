@@ -1,0 +1,209 @@
+name: Build client (Windows)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, SHA)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  LLVM_VERSION: "15.0.6"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_TRIPLET: "x64-windows-static"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Windows x86_64
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: false
+
+      # --------------------------------------------------------------------
+      # Gate on the full env contract before provisioning any toolchain —
+      # saves ~30 minutes of vcpkg time when a secret is misspelled.
+      # --------------------------------------------------------------------
+      - name: Verify build env contract
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER:     ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY:            ${{ secrets.RS_PUB_KEY }}
+          API_SERVER:            ${{ secrets.API_SERVER }}
+          BRAND_APP_NAME:        ${{ vars.BRAND_APP_NAME }}
+          BRAND_ORG:             ${{ vars.BRAND_ORG }}
+          BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
+          BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
+          BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+        run: |
+          missing=()
+          for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
+                   BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
+                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT; do
+              [[ -n "${!v}" ]] || missing+=("$v")
+          done
+          if (( ${#missing[@]} )); then
+              echo "::error::missing secrets/variables: ${missing[*]}"
+              echo "See docs/02-client-build.md for setup."
+              exit 1
+          fi
+          echo "all 8 required values are set"
+
+      # --------------------------------------------------------------------
+      # Toolchain.
+      # --------------------------------------------------------------------
+      - name: Install LLVM/Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/upstream
+          shared-key: windows-x64
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+          cache-key: flutter-windows-${{ env.FLUTTER_VERSION }}
+
+      # Upstream applies a small Flutter SDK patch at build time (dropdown
+      # menu enableFilter). Reuse the patch shipped inside the subtree.
+      - name: Patch Flutter SDK
+        shell: bash
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          patch_file="client/upstream/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if [[ -f "$patch_file" && "${FLUTTER_VERSION}" == "3.24.5" ]]; then
+            cp "$patch_file" "$flutter_root/"
+            pushd "$flutter_root" >/dev/null
+            git apply "$(basename "$patch_file")" || echo "::warning::flutter SDK patch already applied or does not apply"
+            popd >/dev/null
+          fi
+
+      # --------------------------------------------------------------------
+      # vcpkg — libvpx / libyuv / opus / aom for x64-windows-static.
+      # --------------------------------------------------------------------
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          "$VCPKG_ROOT/vcpkg.exe" install --triplet ${{ env.VCPKG_TRIPLET }} libvpx libyuv opus aom
+          echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------------------------
+      # Apply branding. Git Bash on Windows handles sed/install/grep fine.
+      # --------------------------------------------------------------------
+      - name: Apply branding
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER:     ${{ secrets.RENDEZVOUS_SERVER }}
+          RS_PUB_KEY:            ${{ secrets.RS_PUB_KEY }}
+          API_SERVER:            ${{ secrets.API_SERVER }}
+          BRAND_APP_NAME:        ${{ vars.BRAND_APP_NAME }}
+          BRAND_ORG:             ${{ vars.BRAND_ORG }}
+          BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
+          BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
+          BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+        run: client/scripts/apply-branding.sh
+
+      # --------------------------------------------------------------------
+      # Build.
+      # build.py --flutter --skip-portable-pack drives cargo + flutter and
+      # skips the rustdesk-portable-packer stage (we produce a plain zip).
+      # --hwcodec and --vram are intentionally NOT passed: they require the
+      # custom Flutter engine binary from rustdesk/engine — out of scope
+      # for v0 (can be added later without changing our scripts).
+      # --------------------------------------------------------------------
+      - name: Build
+        working-directory: client/upstream
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          python3 build.py --flutter --skip-portable-pack
+          if (-not $?) { throw "build.py failed" }
+
+      # --------------------------------------------------------------------
+      # Verify hardcoded values in the produced .exe and its DLLs.
+      # --------------------------------------------------------------------
+      - name: Verify hardcoded values
+        shell: bash
+        env:
+          EXPECT_RENDEZVOUS: ${{ secrets.RENDEZVOUS_SERVER }}
+          EXPECT_RELAY:      ${{ secrets.RENDEZVOUS_SERVER }}:21117
+          EXPECT_API:        ${{ secrets.API_SERVER }}
+          EXPECT_RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+        run: |
+          release_dir="client/upstream/flutter/build/windows/x64/runner/Release"
+          if [[ ! -d "$release_dir" ]]; then
+              echo "::error::Flutter Windows release dir missing: $release_dir"
+              find client/upstream/flutter/build -maxdepth 6 -type d -name Release | head
+              exit 1
+          fi
+          echo "release dir: $release_dir"
+          ls -la "$release_dir"
+          # Scan the main exe + native DLL. Git-Bash ships `strings`.
+          mapfile -t targets < <(find "$release_dir" -maxdepth 2 -type f \
+              \( -iname "*.exe" -o -iname "librustdesk*.dll" -o -iname "rustdesk*.dll" \))
+          if (( ${#targets[@]} == 0 )); then
+              echo "::error::no binaries found to scan"
+              exit 1
+          fi
+          client/scripts/verify-hardcoded.sh "${targets[@]}"
+
+      # --------------------------------------------------------------------
+      # Package as portable zip.
+      # --------------------------------------------------------------------
+      - name: Package artefact
+        shell: pwsh
+        env:
+          BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+        run: |
+          $sha = "${env:GITHUB_SHA}".Substring(0,7)
+          $out = "${env:BRAND_APP_NAME}-windows-x64-$sha.zip"
+          Compress-Archive `
+              -Path "client/upstream/flutter/build/windows/x64/runner/Release/*" `
+              -DestinationPath "$out" `
+              -CompressionLevel Optimal
+          "ARTIFACT_PATH=$out" >> $env:GITHUB_ENV
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 14
+          if-no-files-found: error
