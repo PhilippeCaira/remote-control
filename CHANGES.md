@@ -25,10 +25,16 @@ The canonical list of patches applied on top of `client/upstream/` lives in
      Substitution at the source level is the minimal, auditable change.
 
 2. **Branding (name, icons, logo, bundle identifiers)**
-   - Assets live in `client/branding/` and are copied into the upstream tree
-     by `client/scripts/apply-branding.sh`.
-   - Text patches (pubspec.yaml, AndroidManifest.xml, Info.plist,
-     AppInfo.xcconfig, build.gradle, Cargo.toml) live in `client/patches/`.
+   - User-visible identity driven by env vars (`BRAND_APP_NAME`,
+     `BRAND_ORG`, `BRAND_ANDROID_APP_ID`, `BRAND_MACOS_BUNDLE_ID`,
+     `BRAND_COPYRIGHT`). Substituted in-place by
+     `client/scripts/apply-branding.sh`. See `docs/02-client-build.md`.
+   - Icon and splash assets live in `client/branding/` and are copied
+     into the upstream tree by the same script.
+   - The Rust crate name (`rustdesk`) and the Flutter package name
+     (`flutter_hbb`) are deliberately NOT renamed — they are referenced
+     throughout the code as `use` / `import` identifiers. Only the
+     user-visible strings and platform bundle identifiers are rewritten.
 
 3. **Auto-update disabled**
    - The upstream updater points to RustDesk's official servers. It is

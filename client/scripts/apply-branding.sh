@@ -8,7 +8,7 @@
 # Order of operations:
 #   1. Preflight: upstream tree present and at the expected pinned tag.
 #   2. Apply every static `.patch` under client/patches/ in lexical order
-#      (rename app, disable updater, …).
+#      (disable updater, …).
 #   3. Substitute the endpoint/key triplet into the upstream source using
 #      sed — the upstream exposes these as plain `const` values, not
 #      env-var-driven macros (verified against rustdesk 1.4.6). Driven by
@@ -16,7 +16,18 @@
 #          RENDEZVOUS_SERVER  — bare host, e.g. rdv.example.com
 #          RS_PUB_KEY         — base64 ed25519 public key (single line)
 #          API_SERVER         — full URL, e.g. https://api.example.com
-#   4. Copy branded assets (icons, splash) from client/branding/ into
+#   4. Inject the product identity (user-visible name, organisation
+#      reverse-DNS, Android applicationId, macOS bundle id, copyright):
+#          BRAND_APP_NAME        — e.g. RemoteControl (no spaces, A-Za-z0-9)
+#          BRAND_ORG             — e.g. com.example
+#          BRAND_ANDROID_APP_ID  — e.g. com.example.remotecontrol
+#          BRAND_MACOS_BUNDLE_ID — e.g. com.example.remotecontrol
+#          BRAND_COPYRIGHT       — e.g. "Copyright (c) 2026 Example SA"
+#      The crate name and the Flutter package name (`rustdesk`,
+#      `flutter_hbb`) are intentionally NOT changed: they are referenced
+#      by `use` statements throughout the codebase; only the *user-visible*
+#      strings are rewritten.
+#   5. Copy branded assets (icons, splash) from client/branding/ into
 #      the well-known locations inside upstream/.
 #
 # Idempotency: each patch is probed with `git apply --check --reverse`
@@ -50,6 +61,22 @@ fi
 : "${RENDEZVOUS_SERVER:?set RENDEZVOUS_SERVER (e.g. rdv.example.com)}"
 : "${RS_PUB_KEY:?set RS_PUB_KEY (base64 ed25519 public key)}"
 : "${API_SERVER:?set API_SERVER (e.g. https://api.example.com)}"
+: "${BRAND_APP_NAME:?set BRAND_APP_NAME (e.g. RemoteControl)}"
+: "${BRAND_ORG:?set BRAND_ORG (e.g. com.example)}"
+: "${BRAND_ANDROID_APP_ID:?set BRAND_ANDROID_APP_ID (e.g. com.example.remotecontrol)}"
+: "${BRAND_MACOS_BUNDLE_ID:?set BRAND_MACOS_BUNDLE_ID (e.g. com.example.remotecontrol)}"
+: "${BRAND_COPYRIGHT:?set BRAND_COPYRIGHT (e.g. \"Copyright (c) 2026 Example SA\")}"
+
+# Cheap sanity checks. Hard to catch every invalid input via regex alone,
+# but these rule out the most common mistakes.
+[[ "$BRAND_APP_NAME"       =~ ^[A-Za-z][A-Za-z0-9]*$ ]] \
+    || fail "BRAND_APP_NAME must be alphanumeric, start with a letter (got: $BRAND_APP_NAME)"
+[[ "$BRAND_ORG"            =~ ^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$ ]] \
+    || fail "BRAND_ORG must be reverse-DNS lowercase (got: $BRAND_ORG)"
+[[ "$BRAND_ANDROID_APP_ID" =~ ^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$ ]] \
+    || fail "BRAND_ANDROID_APP_ID must be reverse-DNS lowercase"
+[[ "$BRAND_MACOS_BUNDLE_ID" =~ ^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)+$ ]] \
+    || fail "BRAND_MACOS_BUNDLE_ID must be reverse-DNS"
 
 # Guard against accidental leak of the upstream default key.
 if [[ "$RS_PUB_KEY" == "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=" ]]; then
@@ -127,7 +154,75 @@ grep -qF "\"${API_SERVER}\".to_owned()" "$COMMON_RS" \
     || fail "API_SERVER substitution failed in $COMMON_RS"
 
 # ---------------------------------------------------------------------------
-# 4. Copy branded assets (non-fatal if missing; CI's release workflow has
+# 4. Inject product identity (user-visible branding).
+# ---------------------------------------------------------------------------
+APP_NAME_ESC=$(sed_escape "$BRAND_APP_NAME")
+ORG_ESC=$(sed_escape "$BRAND_ORG")
+ANDROID_APP_ID_ESC=$(sed_escape "$BRAND_ANDROID_APP_ID")
+MACOS_BUNDLE_ID_ESC=$(sed_escape "$BRAND_MACOS_BUNDLE_ID")
+COPYRIGHT_ESC=$(sed_escape "$BRAND_COPYRIGHT")
+
+# 4.1 Rust: APP_NAME + ORG defaults in config.rs (RwLock initial values).
+log "patching APP_NAME/ORG in $CONFIG_RS"
+sed -i -E \
+    -e "s|RwLock::new\(\"RustDesk\"\.to_owned\(\)\)|RwLock::new(\"${APP_NAME_ESC}\".to_owned())|" \
+    -e "s|RwLock::new\(\"com\.carriez\"\.to_owned\(\)\)|RwLock::new(\"${ORG_ESC}\".to_owned())|" \
+    "$CONFIG_RS"
+grep -qF "RwLock::new(\"${BRAND_APP_NAME}\".to_owned())" "$CONFIG_RS" \
+    || fail "APP_NAME substitution failed in $CONFIG_RS"
+grep -qF "RwLock::new(\"${BRAND_ORG}\".to_owned())" "$CONFIG_RS" \
+    || fail "ORG substitution failed in $CONFIG_RS"
+
+# 4.2 Android: applicationId, package, android:label.
+ANDROID_GRADLE="$UPSTREAM/flutter/android/app/build.gradle"
+ANDROID_MANIFEST="$UPSTREAM/flutter/android/app/src/main/AndroidManifest.xml"
+
+log "patching $ANDROID_GRADLE"
+sed -i -E \
+    -e "s|applicationId \"com\.carriez\.flutter_hbb\"|applicationId \"${ANDROID_APP_ID_ESC}\"|" \
+    "$ANDROID_GRADLE"
+grep -qF "applicationId \"${BRAND_ANDROID_APP_ID}\"" "$ANDROID_GRADLE" \
+    || fail "applicationId substitution failed in $ANDROID_GRADLE"
+
+log "patching $ANDROID_MANIFEST"
+sed -i -E \
+    -e "s|package=\"com\.carriez\.flutter_hbb\"|package=\"${ANDROID_APP_ID_ESC}\"|" \
+    -e "s|android:label=\"RustDesk Input\"|android:label=\"${APP_NAME_ESC} Input\"|" \
+    -e "s|android:label=\"RustDesk\"|android:label=\"${APP_NAME_ESC}\"|" \
+    "$ANDROID_MANIFEST"
+grep -qF "package=\"${BRAND_ANDROID_APP_ID}\"" "$ANDROID_MANIFEST" \
+    || fail "package substitution failed in $ANDROID_MANIFEST"
+grep -qF "android:label=\"${BRAND_APP_NAME}\""  "$ANDROID_MANIFEST" \
+    || fail "android:label substitution failed in $ANDROID_MANIFEST"
+
+# 4.3 macOS: PRODUCT_NAME, PRODUCT_BUNDLE_IDENTIFIER, PRODUCT_COPYRIGHT.
+MACOS_XCCONFIG="$UPSTREAM/flutter/macos/Runner/Configs/AppInfo.xcconfig"
+log "patching $MACOS_XCCONFIG"
+sed -i -E \
+    -e "s|^PRODUCT_NAME *= *RustDesk\$|PRODUCT_NAME = ${APP_NAME_ESC}|" \
+    -e "s|^PRODUCT_BUNDLE_IDENTIFIER *= *com\.carriez\.flutterHbb\$|PRODUCT_BUNDLE_IDENTIFIER = ${MACOS_BUNDLE_ID_ESC}|" \
+    -e "s|^PRODUCT_COPYRIGHT *=.*\$|PRODUCT_COPYRIGHT = ${COPYRIGHT_ESC}|" \
+    "$MACOS_XCCONFIG"
+grep -qE "^PRODUCT_NAME *= *${BRAND_APP_NAME}\$"            "$MACOS_XCCONFIG" \
+    || fail "PRODUCT_NAME substitution failed in $MACOS_XCCONFIG"
+grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCCONFIG" \
+    || fail "PRODUCT_BUNDLE_IDENTIFIER substitution failed in $MACOS_XCCONFIG"
+
+# 4.4 Global regression check: no upstream brand strings should remain.
+LEAK_FILES=(
+    "$CONFIG_RS"
+    "$ANDROID_GRADLE"
+    "$ANDROID_MANIFEST"
+    "$MACOS_XCCONFIG"
+)
+for f in "${LEAK_FILES[@]}"; do
+    if grep -qF "com.carriez" "$f" || grep -qF "flutter_hbb" "$f"; then
+        log "WARN: upstream brand token still present in $f — review the site list"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 5. Copy branded assets (non-fatal if missing; CI's release workflow has
 #    a separate strict-mode guard).
 # ---------------------------------------------------------------------------
 copy() {  # copy <src> <dst>

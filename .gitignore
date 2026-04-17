@@ -3,6 +3,10 @@ server/volumes/
 server/.env
 !server/.env.example
 
+# Client build env (same rationale)
+client/.env
+!client/.env.example
+
 # Upstream subtree working state
 client/upstream/.git/
 client/upstream/build/
