@@ -165,6 +165,14 @@ git restore client/upstream/
 
 This is cheap thanks to the subtree import — no re-fetch required.
 
+## Code signing
+
+Signing identities (Windows EV cert, Apple Developer ID, Android
+release keystore) are **optional** — every build workflow produces a
+working unsigned binary if the signing secrets are absent. The full
+list of accepted secrets and how to obtain them is documented in
+[`docs/03-signing.md`](03-signing.md).
+
 ## Upstream upgrades
 
 When a new RustDesk tag is released:
