@@ -9,12 +9,20 @@ The canonical list of patches applied on top of `client/upstream/` lives in
 
 ## Categories of modification
 
-1. **Hardcoded rendezvous and relay endpoints**
-   - Source of truth: GitHub Actions secrets (`RENDEZVOUS_SERVER`, `RELAY_SERVER`,
-     `API_SERVER`, `RS_PUB_KEY`) injected at build time.
-   - Mechanism: environment variables honored by the upstream build
-     (`libs/hbb_common/src/config.rs`) per the official "hardcode settings"
-     documentation. No source file is modified for these values.
+1. **Hardcoded rendezvous server, relay, API server, and server public key**
+   - Source of truth: GitHub Actions secrets (`RENDEZVOUS_SERVER`,
+     `RELAY_SERVER`, `API_SERVER`, `RS_PUB_KEY`) consumed by
+     `client/scripts/apply-branding.sh` at build-prep time.
+   - Mechanism: `sed` substitution directly in the upstream source.
+     RustDesk's upstream exposes these as plain `const` values — verified
+     against the pinned tag recorded in `client/upstream/.upstream-ref`:
+       - `libs/hbb_common/src/config.rs`: `RENDEZVOUS_SERVERS`, `RS_PUB_KEY`
+       - `src/common.rs`: `get_api_server_()` fallback literal
+         `"https://admin.rustdesk.com"`.
+   - Rationale for sed-over-env-var: upstream does not read these via
+     `option_env!()` or a build.rs; the signed-blob mechanism
+     (`read_custom_client`) requires RustDesk's private signing key.
+     Substitution at the source level is the minimal, auditable change.
 
 2. **Branding (name, icons, logo, bundle identifiers)**
    - Assets live in `client/branding/` and are copied into the upstream tree
