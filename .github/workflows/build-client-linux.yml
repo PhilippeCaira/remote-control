@@ -94,6 +94,9 @@ jobs:
               libgtk-3-dev libpango1.0-dev libglib2.0-dev \
               libpam0g-dev libudev-dev libdrm-dev libva-dev \
               libvdpau-dev libayatana-appindicator3-dev \
+              libavcodec-dev libavformat-dev libavutil-dev \
+              libavfilter-dev libavdevice-dev libswresample-dev \
+              libswscale-dev \
               ninja-build \
               binutils
 
@@ -162,18 +165,20 @@ jobs:
         working-directory: client/upstream
         env:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
-        run: cargo build --lib --features flutter --release
+        run: cargo build --lib --features flutter,hwcodec,unix-file-copy-paste --release
 
       # --------------------------------------------------------------------
       # Build Flutter Linux.
+      # --unix-file-copy-paste enables drag-and-drop between peers.
+      # --hwcodec enables H.264/H.265 hardware encoding via libav*, which
+      # was added as apt deps above. No custom Flutter engine needed on
+      # Linux (unlike Windows — see upstream flutter-build.yml).
       # --------------------------------------------------------------------
       - name: Build Flutter Linux
         working-directory: client/upstream
         run: |
           mkdir -p flutter/build/release
-          # Upstream expects librustdesk.so at the Flutter native assets
-          # location; build.py does this copy automatically.
-          python3 build.py --flutter --skip-cargo
+          python3 build.py --flutter --skip-cargo --hwcodec --unix-file-copy-paste
 
       # --------------------------------------------------------------------
       # Verify hardcoded values land in the binary.
