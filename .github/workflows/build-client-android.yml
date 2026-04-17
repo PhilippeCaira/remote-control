@@ -47,8 +47,9 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - { arch: arm64-v8a,   target: aarch64-linux-android,     android_target: arm64-v8a,   flutter_target: android-arm64 }
-          - { arch: armeabi-v7a, target: armv7-linux-androideabi,   android_target: armeabi-v7a, flutter_target: android-arm   }
+          - { arch: arm64-v8a,   target: aarch64-linux-android,     android_target: arm64-v8a,   flutter_target: android-arm64, ndk_triple: aarch64-linux-android }
+          - { arch: armeabi-v7a, target: armv7-linux-androideabi,   android_target: armeabi-v7a, flutter_target: android-arm,   ndk_triple: arm-linux-androideabi }
+          - { arch: x86_64,      target: x86_64-linux-android,      android_target: x86_64,      flutter_target: android-x64,   ndk_triple: x86_64-linux-android }
 
     steps:
       # --------------------------------------------------------------------
@@ -202,7 +203,7 @@ jobs:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
         run: |
           cargo ndk --platform 21 --target ${{ matrix.job.target }} build \
-              --release --features flutter
+              --release --features flutter,hwcodec
 
           mkdir -p "./flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}"
           # Upstream ships the library as liblibrustdesk.so; Flutter loads
@@ -211,36 +212,66 @@ jobs:
              "./flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}/librustdesk.so"
 
           # C++ shared runtime must ride along for some NDK libs.
-          host_tag=linux-x86_64
-          case "${{ matrix.job.target }}" in
-              aarch64-linux-android)   triple=aarch64-linux-android ;;
-              armv7-linux-androideabi) triple=arm-linux-androideabi ;;
-          esac
-          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${host_tag}/sysroot/usr/lib/${triple}/libc++_shared.so" \
+          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.ndk_triple }}/libc++_shared.so" \
              "./flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}/"
 
       # --------------------------------------------------------------------
-      # Build APK.
-      # The real release signing identity lives in Android Keystore
-      # secrets and will be wired in by a later jalon. For v0 we reuse
-      # the Gradle "debug" signing config so the APK installs but is
-      # clearly marked as debug-signed.
+      # Install release keystore (if secret present).
+      # Expected secrets:
+      #   ANDROID_KEYSTORE_BASE64   - base64-encoded JKS/PKCS12
+      #   ANDROID_KEYSTORE_PASSWORD
+      #   ANDROID_KEY_ALIAS
+      #   ANDROID_KEY_PASSWORD
+      # If absent, the next step falls back to Gradle's debug signing
+      # config so the APK still installs locally.
       # --------------------------------------------------------------------
-      - name: Build APK (debug-signed for v0)
+      - name: Prepare release keystore
+        id: keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS:         ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD:      ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
+              echo "no ANDROID_KEYSTORE_BASE64 secret set — will fall back to debug signing"
+              echo "release_signed=0" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          for v in ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+              [[ -n "${!v}" ]] || { echo "::error::$v missing alongside ANDROID_KEYSTORE_BASE64"; exit 1; }
+          done
+          keystore_path="$RUNNER_TEMP/release.keystore"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          cat > client/upstream/flutter/android/key.properties <<EOF
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=$keystore_path
+          EOF
+          echo "release_signed=1" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------------------
+      # Build APK.
+      # --------------------------------------------------------------------
+      - name: Build APK
         working-directory: client/upstream
         shell: bash
         env:
           JAVA_HOME: /usr/lib/jvm/java-${{ env.JAVA_VERSION }}-openjdk-amd64
+          RELEASE_SIGNED: ${{ steps.keystore.outputs.release_signed }}
         run: |
           export PATH="$JAVA_HOME/bin:$PATH"
-          # Increase Gradle JVM memory for CI stability.
           sed -i 's/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g' \
               ./flutter/android/gradle.properties
 
-          # v0 safeguard: use debug signing until ANDROID_KEYSTORE secret
-          # is wired in (idempotent — re-running the sed is a no-op).
-          sed -i 's/signingConfigs\.release/signingConfigs.debug/g' \
-              ./flutter/android/app/build.gradle
+          if [[ "$RELEASE_SIGNED" != "1" ]]; then
+              # Debug-sign fallback: swap the release signing config for
+              # the debug one so the APK still installs locally.
+              sed -i 's/signingConfigs\.release/signingConfigs.debug/g' \
+                  ./flutter/android/app/build.gradle
+          fi
 
           pushd flutter >/dev/null
           flutter build apk --release \
