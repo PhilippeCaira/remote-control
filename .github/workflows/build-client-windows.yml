@@ -34,6 +34,7 @@ env:
   LLVM_VERSION: "15.0.6"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VCPKG_TRIPLET: "x64-windows-static"
+  SIGNTOOL_TIMESTAMP_URL: "http://timestamp.digicert.com"
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 
@@ -171,6 +172,48 @@ jobs:
           if (-not $?) { throw "build.py failed" }
 
       # --------------------------------------------------------------------
+      # Code signing (conditional) — signs the main .exe and DLLs.
+      # Activated when WINDOWS_PFX_BASE64 secret is set. Without it, the
+      # binary still ships but SmartScreen will warn "Unknown publisher".
+      #
+      # Expected secrets:
+      #   WINDOWS_PFX_BASE64     - base64-encoded .pfx/.p12 cert
+      #   WINDOWS_PFX_PASSWORD   - password protecting the .pfx
+      # --------------------------------------------------------------------
+      - name: Decode signing certificate
+        id: signing
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+        run: |
+          if (-not $env:PFX_BASE64) {
+              Write-Host "WINDOWS_PFX_BASE64 not set — skipping code signing"
+              "enabled=0" >> $env:GITHUB_OUTPUT
+              exit 0
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "signing-cert.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_BASE64))
+          "pfx_path=$pfxPath"  >> $env:GITHUB_OUTPUT
+          "enabled=1" >> $env:GITHUB_OUTPUT
+
+      - name: Sign exe + DLLs
+        if: steps.signing.outputs.enabled == '1'
+        shell: pwsh
+        env:
+          PFX_PATH: ${{ steps.signing.outputs.pfx_path }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $release = "client/upstream/flutter/build/windows/x64/runner/Release"
+          $targets = Get-ChildItem -Path $release -Recurse -Include *.exe,*.dll |
+                     Where-Object { $_.Name -match "^(rustdesk|librustdesk)" }
+          foreach ($f in $targets) {
+              & signtool sign /f $env:PFX_PATH /p $env:PFX_PASSWORD `
+                   /fd SHA256 /tr $env:SIGNTOOL_TIMESTAMP_URL /td SHA256 `
+                   "$($f.FullName)"
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed on $($f.FullName)" }
+          }
+
+      # --------------------------------------------------------------------
       # Verify hardcoded values in the produced .exe and its DLLs.
       # --------------------------------------------------------------------
       - name: Verify hardcoded values
@@ -215,10 +258,58 @@ jobs:
               -CompressionLevel Optimal
           "ARTIFACT_PATH=$out" >> $env:GITHUB_ENV
 
-      - name: Upload artefact
+      - name: Upload zip artefact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-x64
+          name: windows-x64-zip
           path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 14
+          if-no-files-found: error
+
+      # --------------------------------------------------------------------
+      # MSI installer (WiX via upstream's res/msi/ preprocess).
+      # --------------------------------------------------------------------
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build MSI
+        working-directory: client/upstream/res/msi
+        shell: pwsh
+        run: |
+          python preprocess.py --arp -d ../../flutter/build/windows/x64/runner/Release
+          if ($LASTEXITCODE -ne 0) { throw "preprocess.py failed" }
+          nuget restore msi.sln
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          if ($LASTEXITCODE -ne 0) { throw "msbuild failed" }
+
+      - name: Sign MSI
+        if: steps.signing.outputs.enabled == '1'
+        shell: pwsh
+        env:
+          PFX_PATH:     ${{ steps.signing.outputs.pfx_path }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $msi = Get-ChildItem client/upstream/res/msi/Package/bin/x64/Release -Filter "*.msi" -Recurse | Select-Object -First 1
+          & signtool sign /f $env:PFX_PATH /p $env:PFX_PASSWORD `
+               /fd SHA256 /tr $env:SIGNTOOL_TIMESTAMP_URL /td SHA256 "$($msi.FullName)"
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed on MSI" }
+
+      - name: Stage MSI artefact
+        shell: pwsh
+        env:
+          BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+          RELEASE_TAG:    ${{ inputs.release_tag }}
+        run: |
+          $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { "${env:GITHUB_SHA}".Substring(0,7) }
+          $msi = Get-ChildItem client/upstream/res/msi/Package/bin/x64/Release -Filter "*.msi" -Recurse | Select-Object -First 1
+          $out = "${env:BRAND_APP_NAME}-windows-x64-$tag.msi"
+          Copy-Item $msi.FullName $out
+          "MSI_PATH=$out" >> $env:GITHUB_ENV
+
+      - name: Upload MSI artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-msi
+          path: ${{ env.MSI_PATH }}
           retention-days: 14
           if-no-files-found: error
