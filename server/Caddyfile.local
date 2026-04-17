@@ -1,0 +1,54 @@
+# Caddy config for the *local testing* profile.
+#
+# Differences vs. Caddyfile (prod):
+#   - `tls internal` issues a cert from Caddy's built-in local CA instead
+#     of Let's Encrypt. The CA's root cert is imported into the system
+#     trust store by server/scripts/install-local-ca.sh.
+#   - Hostnames are on `.rdc.local`.
+#   - No ACME_EMAIL required.
+
+{
+	# Disable automatic HTTPS redirects log spam on localhost
+	auto_https disable_redirects
+}
+
+api.rdc.local {
+	tls internal
+
+	encode zstd gzip
+
+	reverse_proxy rustdesk:21114 {
+		transport http {
+			read_timeout 5m
+			write_timeout 5m
+		}
+	}
+
+	header {
+		-Server
+	}
+}
+
+dl.rdc.local {
+	tls internal
+
+	encode zstd gzip
+
+	root * /srv/downloads
+	file_server {
+		precompressed gzip
+	}
+
+	@windows path /windows /windows/
+	redir @windows /windows/latest.msi 302
+	@macos path /macos /macos/
+	redir @macos /macos/latest.dmg 302
+	@linux path /linux /linux/
+	redir @linux /linux/latest.AppImage 302
+	@android path /android /android/
+	redir @android /android/latest.apk 302
+
+	header {
+		-Server
+	}
+}

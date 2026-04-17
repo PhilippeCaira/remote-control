@@ -2,6 +2,8 @@
 server/volumes/
 server/.env
 !server/.env.example
+server/docker-compose.override.yml
+!server/docker-compose.override.yml.example
 
 # Client build env (same rationale)
 client/.env

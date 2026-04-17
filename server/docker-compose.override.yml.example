@@ -1,0 +1,32 @@
+# ============================================================================
+# Local testing override.
+#
+# Activates a *fully local* profile of the stack on a single developer box:
+#   - Caddy runs under `tls internal` instead of Let's Encrypt ACME
+#     (no public DNS required).
+#   - Hostnames end in `.rdc.local`, resolved via /etc/hosts entries added
+#     by server/scripts/install-local-ca.sh.
+#
+# To activate: copy this file to docker-compose.override.yml (gitignored).
+# Docker Compose auto-merges the two, so `docker compose up -d` just works.
+#
+# To deactivate: delete docker-compose.override.yml, then
+# server/scripts/uninstall-local-ca.sh to clean the trust anchor and hosts.
+# ============================================================================
+
+services:
+  rustdesk:
+    environment:
+      # Hostnames the hardcoded client will hit (must match those patched
+      # into the source by client/scripts/apply-branding.sh).
+      RUSTDESK_API_RUSTDESK_ID_SERVER: rdv.rdc.local:21116
+      RUSTDESK_API_RUSTDESK_RELAY_SERVER: rdv.rdc.local:21117
+      RUSTDESK_API_RUSTDESK_API_SERVER: https://api.rdc.local
+
+  caddy:
+    # Re-mount Caddyfile.local in place of the Caddyfile baked for prod.
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy/data:/data
+      - ./volumes/caddy/config:/config
+      - ./volumes/downloads:/srv/downloads:ro
