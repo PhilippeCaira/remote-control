@@ -31,9 +31,13 @@ sudo dnf install -y \
     libvdpau-devel libayatana-appindicator-gtk3-devel \
     gstreamer1-devel gstreamer1-plugins-base-devel \
     ffmpeg-free-devel \
+    openssl-devel \
     nasm binutils \
     python3.11 \
-    unzip wget curl git tar
+    unzip wget curl git tar \
+    perl-FindBin perl-File-Compare perl-File-Copy perl-IPC-Cmd \
+    perl-Time-Piece perl-File-Path perl-File-Temp \
+    perl-Digest-SHA perl-Text-Template
 
 # ---------------------------------------------------------------------------
 # B.2 — Rust 1.75 via rustup
@@ -65,7 +69,11 @@ fi
     git fetch origin
     git checkout 120deac3062162151622ca4860575a33844ba10b
     [[ -x ./vcpkg ]] || ./bootstrap-vcpkg.sh -disableMetrics
-    ./vcpkg install libvpx libyuv opus aom
+    # ffmpeg required by rustdesk/hwcodec (even when hwcodec is built against
+    # vcpkg on Linux — system ffmpeg headers are in /usr/include/ffmpeg but
+    # hwcodec build.rs looks inside $VCPKG_ROOT/installed/x64-linux/include).
+    # ffmpeg build is the long pole — ~30-60 min on first run.
+    ./vcpkg install libvpx libyuv opus aom ffmpeg
 )
 echo "export VCPKG_ROOT=$HOME/vcpkg" >> "$ENV_FILE"
 echo 'export PATH="$VCPKG_ROOT:$PATH"' >> "$ENV_FILE"
