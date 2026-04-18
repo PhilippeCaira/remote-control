@@ -173,6 +173,21 @@ jobs:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: ./flutter/build_android_deps.sh ${{ matrix.job.android_target }}
 
+      - name: Download bridge artefact
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: client/upstream/
+
+      - name: Assert bridge files present
+        shell: bash
+        run: |
+          for f in src/bridge_generated.rs src/bridge_generated.io.rs \
+                   flutter/lib/generated_bridge.dart \
+                   flutter/lib/generated_bridge.freezed.dart; do
+              [[ -f "client/upstream/$f" ]] || { echo "::error::$f missing — bridge job did not run?"; exit 1; }
+          done
+
       # --------------------------------------------------------------------
       # Apply branding.
       # --------------------------------------------------------------------
@@ -201,6 +216,8 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          CXXFLAGS: "-include cstdint"
+          CARGO_NET_RETRY: "10"
         run: |
           cargo ndk --platform 21 --target ${{ matrix.job.target }} build \
               --release --features flutter,hwcodec

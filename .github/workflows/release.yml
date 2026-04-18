@@ -50,11 +50,20 @@ jobs:
           echo "Releasing tag=$tag from ref=$ref"
 
   # --------------------------------------------------------------------------
+  # Bridge generation — must run once before any platform build so that
+  # bridge_generated.rs + generated_bridge.dart exist in the artefact store.
+  # --------------------------------------------------------------------------
+  bridge:
+    name: Generate bridge
+    needs: prepare
+    uses: ./.github/workflows/generate-bridge.yml
+
+  # --------------------------------------------------------------------------
   # Per-platform builds run in parallel.
   # --------------------------------------------------------------------------
   linux:
     name: Build Linux
-    needs: prepare
+    needs: [prepare, bridge]
     uses: ./.github/workflows/build-client-linux.yml
     with:
       ref: ${{ needs.prepare.outputs.ref }}
@@ -63,7 +72,7 @@ jobs:
 
   windows:
     name: Build Windows
-    needs: prepare
+    needs: [prepare, bridge]
     uses: ./.github/workflows/build-client-windows.yml
     with:
       ref: ${{ needs.prepare.outputs.ref }}
@@ -72,7 +81,7 @@ jobs:
 
   macos:
     name: Build macOS
-    needs: prepare
+    needs: [prepare, bridge]
     uses: ./.github/workflows/build-client-macos.yml
     with:
       ref: ${{ needs.prepare.outputs.ref }}
@@ -81,7 +90,7 @@ jobs:
 
   android:
     name: Build Android
-    needs: prepare
+    needs: [prepare, bridge]
     uses: ./.github/workflows/build-client-android.yml
     with:
       ref: ${{ needs.prepare.outputs.ref }}
@@ -93,7 +102,7 @@ jobs:
   # --------------------------------------------------------------------------
   publish:
     name: Publish GitHub Release
-    needs: [prepare, linux, windows, macos, android]
+    needs: [prepare, bridge, linux, windows, macos, android]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:

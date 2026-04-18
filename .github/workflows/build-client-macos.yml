@@ -151,8 +151,23 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ matrix.job.vcpkg-triplet }}
         run: |
-          "$VCPKG_ROOT/vcpkg" install libvpx libyuv opus aom
+          "$VCPKG_ROOT/vcpkg" install libvpx libyuv opus aom ffmpeg
           echo "VCPKG_ROOT=$VCPKG_ROOT" >> "$GITHUB_ENV"
+
+      - name: Download bridge artefact
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: client/upstream/
+
+      - name: Assert bridge files present
+        shell: bash
+        run: |
+          for f in src/bridge_generated.rs src/bridge_generated.io.rs \
+                   flutter/lib/generated_bridge.dart \
+                   flutter/lib/generated_bridge.freezed.dart; do
+              [[ -f "client/upstream/$f" ]] || { echo "::error::$f missing — bridge job did not run?"; exit 1; }
+          done
 
       # --------------------------------------------------------------------
       - name: Apply branding
@@ -179,6 +194,8 @@ jobs:
         working-directory: client/upstream
         env:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          CXXFLAGS: "-include cstdint"
+          CARGO_NET_RETRY: "10"
         run: |
           EXTRA=""
           [[ "${{ matrix.job.arch }}" == "aarch64" ]] && EXTRA="--screencapturekit"

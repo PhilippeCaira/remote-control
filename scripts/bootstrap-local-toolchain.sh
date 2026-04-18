@@ -20,7 +20,7 @@ ENV_FILE="$HOME/.config/remote-control/env"
 # ---------------------------------------------------------------------------
 # B.1 — System packages (Fedora)
 # ---------------------------------------------------------------------------
-log "Step 1/5: installing system packages via dnf (sudo required)..."
+log "Step 1/6: installing system packages via dnf (sudo required)..."
 sudo dnf install -y \
     clang llvm cmake ninja-build pkgconf-pkg-config \
     gtk3-devel pango-devel glib2-devel cairo-devel \
@@ -42,7 +42,7 @@ sudo dnf install -y \
 # ---------------------------------------------------------------------------
 # B.2 — Rust 1.75 via rustup
 # ---------------------------------------------------------------------------
-log "Step 2/5: Rust 1.75 toolchain..."
+log "Step 2/6: Rust 1.75 toolchain..."
 if ! command -v rustup >/dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
         sh -s -- -y --default-toolchain 1.75.0 --profile minimal
@@ -60,7 +60,7 @@ echo 'source "$HOME/.cargo/env"' >> "$ENV_FILE"
 # ---------------------------------------------------------------------------
 # B.3 — vcpkg + host libs (libvpx, libyuv, opus, aom)
 # ---------------------------------------------------------------------------
-log "Step 3/5: vcpkg host libs (long — up to ~40 min on first run)..."
+log "Step 3/6: vcpkg host libs (long — up to ~40 min on first run)..."
 if [[ ! -d "$HOME/vcpkg" ]]; then
     git clone https://github.com/microsoft/vcpkg "$HOME/vcpkg"
 fi
@@ -81,12 +81,23 @@ echo 'export PATH="$VCPKG_ROOT:$PATH"' >> "$ENV_FILE"
 # ---------------------------------------------------------------------------
 # B.4 — Flutter 3.24.5
 # ---------------------------------------------------------------------------
-log "Step 4/5: Flutter 3.24.5..."
+log "Step 4/6: Flutter 3.24.5 (runtime) + 3.22.3 (codegen)..."
 if [[ ! -x "$HOME/flutter/bin/flutter" ]]; then
     curl -L -o /tmp/flutter.tar.xz \
         https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.24.5-stable.tar.xz
     tar -xJf /tmp/flutter.tar.xz -C "$HOME/"
     rm -f /tmp/flutter.tar.xz
+fi
+# Flutter 3.22.3 is required specifically for flutter_rust_bridge_codegen.
+# Flutter 3.24.5 cannot run the codegen (Dart API changes break ffigen).
+if [[ ! -x "$HOME/flutter-3.22.3/bin/flutter" ]]; then
+    curl -L -o /tmp/flutter-3.22.3.tar.xz \
+        https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.22.3-stable.tar.xz
+    mkdir -p /tmp/flutter-codegen
+    tar -xJf /tmp/flutter-3.22.3.tar.xz -C /tmp/flutter-codegen
+    mv /tmp/flutter-codegen/flutter "$HOME/flutter-3.22.3"
+    rmdir /tmp/flutter-codegen
+    rm -f /tmp/flutter-3.22.3.tar.xz
 fi
 
 # Apply the same patch the CI applies on stock 3.24.5.
@@ -110,7 +121,35 @@ echo "export PATH=\"$HOME/flutter/bin:\$PATH\"" >> "$ENV_FILE"
 # ---------------------------------------------------------------------------
 # B.5 — Android SDK + NDK r27c + AVD image
 # ---------------------------------------------------------------------------
-log "Step 5/5: Android SDK + NDK r27c..."
+# ---------------------------------------------------------------------------
+# B.5 — flutter_rust_bridge codegen stack
+#
+# The codegen is the one that produces src/bridge_generated.rs and the
+# matching Dart files. Upstream uses a FORK of flutter_rust_bridge which
+# fixes a codegen bug affecting EventToUI::Texture(usize, bool); the
+# crates.io release produces broken Dart that refuses to compile.
+# ---------------------------------------------------------------------------
+log "Step 5/6: flutter_rust_bridge codegen (fork + cargo-expand)..."
+if ! command -v cargo-expand >/dev/null; then
+    cargo install cargo-expand --version 1.0.95 --locked
+fi
+# Always reinstall codegen so the fork overrides any previous crates.io install.
+if [[ ! -d /tmp/flutter_rust_bridge ]]; then
+    git clone --depth=1 \
+        https://github.com/SoLongAndThanksForAllThePizza/flutter_rust_bridge \
+        /tmp/flutter_rust_bridge
+fi
+cargo install --path /tmp/flutter_rust_bridge/frb_codegen --locked --force
+
+# ffigen 6.0.1+ is required by the fork codegen (< 8 to match its deps).
+export PATH="$HOME/flutter-3.22.3/bin:$HOME/flutter-3.22.3/bin/cache/dart-sdk/bin:$HOME/.pub-cache/bin:$PATH"
+dart pub global activate ffigen '>=6.0.1 <8.0.0' >/dev/null
+echo 'export PATH="$HOME/.pub-cache/bin:$PATH"' >> "$ENV_FILE"
+
+# ---------------------------------------------------------------------------
+# B.6 — Android SDK + NDK r27c + AVD image
+# ---------------------------------------------------------------------------
+log "Step 6/6: Android SDK + NDK r27c..."
 ANDROID_HOME="$HOME/Android/Sdk"
 mkdir -p "$ANDROID_HOME/cmdline-tools"
 if [[ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]]; then
