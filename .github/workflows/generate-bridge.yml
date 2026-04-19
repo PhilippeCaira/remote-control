@@ -68,13 +68,14 @@ jobs:
       - name: Install cargo-expand
         run: cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
 
-      - name: Install flutter_rust_bridge_codegen (upstream fork)
-        # The SoLongAndThanksForAllThePizza fork fixes a bool-in-tuple
-        # enum-variant codegen bug (EventToUI::Texture(usize, bool) gets
-        # mis-emitted as NativeFunction by the crates.io release).
-        run: |
-          git clone --depth=1 https://github.com/SoLongAndThanksForAllThePizza/flutter_rust_bridge /tmp/frb
-          cargo install --path /tmp/frb/frb_codegen --locked
+      - name: Install flutter_rust_bridge_codegen 1.80.1 (crates.io)
+        # Must match the runtime `flutter_rust_bridge = "=1.80"` pinned in
+        # client/upstream/Cargo.toml. The SoLongAndThanksForAllThePizza fork
+        # is at 1.75.0 (5 versions behind) and emits the old `IntoDart`
+        # trait, while 1.80 expects `IntoIntoDart`. Version mismatch makes
+        # cargo build fail. --features uuid enables UUID<->String bridging
+        # (same flag upstream CI bridge.yml uses).
+        run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
 
       - name: Setup Flutter 3.22.3 (codegen only)
         uses: subosito/flutter-action@v2
