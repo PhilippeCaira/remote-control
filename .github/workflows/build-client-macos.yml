@@ -184,22 +184,32 @@ jobs:
         run: client/scripts/apply-branding.sh
 
       # --------------------------------------------------------------------
-      # Build.
-      # arm64-only upstream note (commented out for v0): lowering
-      # MACOSX_DEPLOYMENT_TARGET to 12.3 to widen the supported macOS
-      # range. Default Flutter target is recent enough for Apple Silicon.
-      # --hwcodec skipped (custom engine); --screencapturekit only on arm.
+      # Build. We bypass upstream build.py on macOS because it hardcodes
+      # the RustDesk.app path in multiple places — our PRODUCT_NAME is
+      # renamed via apply-branding, so flutter produces e.g.
+      # RemoteControl.app, and build.py's cp of the service binary hits
+      # a non-existent path. Drive cargo + flutter directly instead.
+      # --hwcodec skipped (custom Flutter engine required);
+      # --screencapturekit kept on arm64 per upstream's matrix.
       # --------------------------------------------------------------------
-      - name: Build
+      - name: Build Rust library
         working-directory: client/upstream
         env:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
           CXXFLAGS: "-include cstdint"
           CARGO_NET_RETRY: "10"
         run: |
-          EXTRA=""
-          [[ "${{ matrix.job.arch }}" == "aarch64" ]] && EXTRA="--screencapturekit"
-          python3 build.py --flutter --unix-file-copy-paste $EXTRA
+          FEATURES="flutter,unix-file-copy-paste"
+          [[ "${{ matrix.job.arch }}" == "aarch64" ]] && FEATURES="$FEATURES,screencapturekit"
+          cargo build --lib --features "$FEATURES" --release
+
+      - name: Build Flutter macOS
+        working-directory: client/upstream/flutter
+        env:
+          CXXFLAGS: "-include cstdint"
+        run: |
+          flutter pub get
+          flutter build macos --release
 
       # --------------------------------------------------------------------
       # Verify hardcoded values inside the .app bundle.
@@ -223,12 +233,15 @@ jobs:
               exit 1
           fi
           echo "app bundle: $app_dir"
-          # Scan the main binary + embedded dylibs / frameworks.
-          exe="$app_dir/Contents/MacOS/$(basename "$app_dir" .app)"
-          mapfile -t targets < <(
-              printf '%s\n' "$exe"
-              find "$app_dir" -type f \( -name '*.dylib' -o -path '*/Frameworks/*' \) 2>/dev/null
-          )
+          # Scan only the Rust-compiled dylib — the main Flutter exe is
+          # stripped and does not carry the hardcoded strings.
+          mapfile -t targets < <(find "$app_dir" -type f \
+              \( -name 'librustdesk*.dylib' -o -name 'librustdesk.so' \) 2>/dev/null)
+          if (( ${#targets[@]} == 0 )); then
+              echo "::error::no librustdesk dylib found in $app_dir"
+              find "$app_dir" -maxdepth 6 -type f -name '*.dylib' | head
+              exit 1
+          fi
           client/scripts/verify-hardcoded.sh "${targets[@]}"
           echo "APP_DIR=$app_dir" >> "$GITHUB_ENV"
 
