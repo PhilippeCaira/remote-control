@@ -211,6 +211,21 @@ jobs:
           flutter pub get
           flutter build macos --release
 
+      - name: Bundle librustdesk.dylib into .app
+        working-directory: client/upstream
+        shell: bash
+        run: |
+          # Flutter doesn't auto-bundle the Rust cdylib. Upstream build.py
+          # normally handles this; we bypass build.py for the reasons above,
+          # so do the copy ourselves.
+          dylib="target/release/liblibrustdesk.dylib"
+          [[ -f "$dylib" ]] || { echo "::error::$dylib missing"; exit 1; }
+          app_dir=$(ls -d flutter/build/macos/Build/Products/Release/*.app 2>/dev/null | head -1)
+          [[ -n "$app_dir" ]] || { echo "::error::no .app produced"; exit 1; }
+          mkdir -p "$app_dir/Contents/Frameworks"
+          cp "$dylib" "$app_dir/Contents/Frameworks/liblibrustdesk.dylib"
+          ls -la "$app_dir/Contents/Frameworks/liblibrustdesk.dylib"
+
       # --------------------------------------------------------------------
       # Verify hardcoded values inside the .app bundle.
       # --------------------------------------------------------------------
