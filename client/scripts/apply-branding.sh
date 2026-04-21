@@ -212,7 +212,29 @@ grep -qE "^PRODUCT_NAME *= *${BRAND_APP_NAME}\$"            "$MACOS_XCCONFIG" \
 grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCCONFIG" \
     || fail "PRODUCT_BUNDLE_IDENTIFIER substitution failed in $MACOS_XCCONFIG"
 
-# 4.4 Global regression check: no upstream brand strings should remain.
+# 4.4 Anchor the four hardcoded values in a `#[used] static` so LTO cannot
+# eliminate them. macOS x86_64 aggressive DCE otherwise strips the API
+# fallback literal from both the dylib and the wrapper, breaking
+# verify-hardcoded. Linux / Windows / macOS arm64 don't need this but the
+# anchor is harmless there.
+if ! grep -q "_RDC_BUILD_INFO_ANCHOR" "$CONFIG_RS"; then
+    cat >> "$CONFIG_RS" <<EOF
+
+// ── Branded build anchor (added by client/scripts/apply-branding.sh) ─────
+// Keeps the four hardcoded endpoints resident through LTO so post-build
+// verification (client/scripts/verify-hardcoded.sh) can locate them.
+#[used]
+static _RDC_BUILD_INFO_ANCHOR: [&str; 4] = [
+    "${RENDEZVOUS_ESC}",
+    "${RS_PUB_KEY_ESC}",
+    "${API_SERVER_ESC}",
+    "${BRAND_APP_NAME}",
+];
+EOF
+    log "appended _RDC_BUILD_INFO_ANCHOR to $CONFIG_RS"
+fi
+
+# 4.5 Global regression check: no upstream brand strings should remain.
 LEAK_FILES=(
     "$CONFIG_RS"
     "$ANDROID_GRADLE"
@@ -225,7 +247,7 @@ for f in "${LEAK_FILES[@]}"; do
     fi
 done
 
-# 4.5 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
+# 4.6 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
 # on GNU sed AND BSD sed. Without the attached extension, BSD treats the
 # next flag as an extension and the command misparses).
 find "$UPSTREAM" -name '*.sedbak' -delete
