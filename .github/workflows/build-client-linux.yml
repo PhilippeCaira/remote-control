@@ -223,10 +223,16 @@ jobs:
               exit 1
           fi
           echo "bundle: $bundle_dir"
-          ls -la "$bundle_dir"
-          # Scan every ELF in the bundle (main exe + .so shims).
-          mapfile -t targets < <(find "$bundle_dir" -maxdepth 3 -type f \
-              \( -name '*.so' -o -executable \) 2>/dev/null)
+          ls -la "$bundle_dir" "$bundle_dir/lib" 2>/dev/null
+          # Scan only the Rust shared libraries — the Flutter wrapper `rustdesk`
+          # executable in the bundle root is stripped and does not contain the
+          # hardcoded strings (they live in librustdesk.so).
+          mapfile -t targets < <(find "$bundle_dir/lib" -maxdepth 2 -type f \
+              -name 'librustdesk*.so' 2>/dev/null)
+          if (( ${#targets[@]} == 0 )); then
+              echo "::error::no librustdesk.so found under $bundle_dir/lib"
+              exit 1
+          fi
           client/scripts/verify-hardcoded.sh "${targets[@]}"
 
       # --------------------------------------------------------------------
