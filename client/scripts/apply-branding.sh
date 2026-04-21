@@ -218,6 +218,9 @@ grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCC
 # verify-hardcoded. Linux / Windows / macOS arm64 don't need this but the
 # anchor is harmless there.
 if ! grep -q "_RDC_BUILD_INFO_ANCHOR" "$CONFIG_RS"; then
+    # Use Rust raw strings `r"..."` so URLs and base64 pubkeys don't need
+    # escaping, and use the UNESCAPED user-supplied values (sed escapes
+    # `/` as `\/` which is an invalid Rust string escape).
     cat >> "$CONFIG_RS" <<EOF
 
 // ── Branded build anchor (added by client/scripts/apply-branding.sh) ─────
@@ -225,10 +228,10 @@ if ! grep -q "_RDC_BUILD_INFO_ANCHOR" "$CONFIG_RS"; then
 // verification (client/scripts/verify-hardcoded.sh) can locate them.
 #[used]
 static _RDC_BUILD_INFO_ANCHOR: [&str; 4] = [
-    "${RENDEZVOUS_ESC}",
-    "${RS_PUB_KEY_ESC}",
-    "${API_SERVER_ESC}",
-    "${BRAND_APP_NAME}",
+    r"${RENDEZVOUS_SERVER}",
+    r"${RS_PUB_KEY}",
+    r"${API_SERVER}",
+    r"${BRAND_APP_NAME}",
 ];
 EOF
     log "appended _RDC_BUILD_INFO_ANCHOR to $CONFIG_RS"
