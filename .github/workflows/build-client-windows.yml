@@ -182,7 +182,10 @@ jobs:
         shell: pwsh
         env:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
-          CXXFLAGS: "-include cstdint"
+          # NOTE: CXXFLAGS="-include cstdint" (GCC syntax for defensive
+          # header injection) is intentionally NOT set here. MSVC uses
+          # /FI instead, and MSVC doesn't have the GCC-13+ libwebm issue
+          # the Linux/macOS workflows guard against.
           CARGO_NET_RETRY: "10"
         run: |
           python3 build.py --flutter --skip-portable-pack
