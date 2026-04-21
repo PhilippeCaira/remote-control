@@ -45,6 +45,10 @@ jobs:
               ref="${GITHUB_REF}"
               tag="${GITHUB_REF#refs/tags/}"
           fi
+          # Sanitize: branch names contain '/' which is a directory separator.
+          # Filenames downstream (RemoteControl-linux-$tag.tar.gz, etc.) would
+          # explode into subpaths and the cp fails. Replace '/' with '-'.
+          tag="${tag//\//-}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "Releasing tag=$tag from ref=$ref"
