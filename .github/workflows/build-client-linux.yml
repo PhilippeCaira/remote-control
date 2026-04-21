@@ -99,6 +99,7 @@ jobs:
               libavfilter-dev libavdevice-dev libswresample-dev \
               libswscale-dev \
               libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+              libunwind-dev \
               ninja-build nasm \
               binutils
 
