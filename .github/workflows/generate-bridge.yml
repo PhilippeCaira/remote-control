@@ -92,13 +92,11 @@ jobs:
         working-directory: client/upstream/flutter
         # Upstream's bridge.yml sed-downgrades extended_text to 13.0.0 for
         # the codegen step only (it is reverted to 14.0.0 by the build
-        # workflows). We also sed-replace ffigen ^8.0.2 with 6.0.1..8
-        # because the fork codegen fails with ffigen >=8.0 ("please
-        # update version of ffigen in your dev_dependencies").
-        # Exact pattern verified in Ubuntu 22.04 sim (see /tmp/rdc-ci).
+        # workflows). ffigen stays at ^8.0.x (what the pubspec ships) —
+        # flutter_rust_bridge_codegen 1.80.1 from crates.io REQUIRES ffigen
+        # in [8.0.0, 9.0.0). Do NOT downgrade it.
         run: |
           sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
-          sed -i -E "s|ffigen: *\^?8\.[0-9.]+|ffigen: '>=6.0.1 <8.0.0'|" pubspec.yaml
           grep -E "extended_text:|ffigen:" pubspec.yaml
           flutter pub get
 
