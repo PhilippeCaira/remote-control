@@ -3,5 +3,14 @@
 # built upstream with Rust 1.75 (see libs/hbb_common and the upstream CI
 # matrix). Bump in lockstep with the upstream pin.
 [toolchain]
-channel = "1.75"
+# Pin precisely to 1.75.0 (with patch). An unqualified "1.75" forces rustup
+# to resolve + download whatever is latest 1.75.x, which drops any per-
+# target stdlib we pre-installed on 1.75.0 and breaks cross-compile.
+channel = "1.75.0"
 components = ["rustfmt", "clippy"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+]

@@ -185,13 +185,17 @@ grep -qF "applicationId \"${BRAND_ANDROID_APP_ID}\"" "$ANDROID_GRADLE" \
     || fail "applicationId substitution failed in $ANDROID_GRADLE"
 
 log "patching $ANDROID_MANIFEST"
+# IMPORTANT: do NOT change the `package="com.carriez.flutter_hbb"` attribute.
+# That value is the *namespace* used to generate the R class at
+# `com.carriez.flutter_hbb.R`. Every Kotlin file in
+# flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/ imports R
+# via that path. The user-visible identity comes from applicationId in
+# build.gradle (which we do change). This matches Android's current
+# namespace-vs-applicationId convention.
 sed -i -E \
-    -e "s|package=\"com\.carriez\.flutter_hbb\"|package=\"${ANDROID_APP_ID_ESC}\"|" \
     -e "s|android:label=\"RustDesk Input\"|android:label=\"${APP_NAME_ESC} Input\"|" \
     -e "s|android:label=\"RustDesk\"|android:label=\"${APP_NAME_ESC}\"|" \
     "$ANDROID_MANIFEST"
-grep -qF "package=\"${BRAND_ANDROID_APP_ID}\"" "$ANDROID_MANIFEST" \
-    || fail "package substitution failed in $ANDROID_MANIFEST"
 grep -qF "android:label=\"${BRAND_APP_NAME}\""  "$ANDROID_MANIFEST" \
     || fail "android:label substitution failed in $ANDROID_MANIFEST"
 
