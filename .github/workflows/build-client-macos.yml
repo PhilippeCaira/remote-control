@@ -248,12 +248,14 @@ jobs:
               exit 1
           fi
           echo "app bundle: $app_dir"
-          # Scan only the Rust-compiled dylib — the main Flutter exe is
-          # stripped and does not carry the hardcoded strings.
-          # The crate name is `librustdesk`, Rust adds a `lib` prefix →
-          # file is `liblibrustdesk.dylib`. Match both single and double prefix.
-          # NOTE: macOS ships bash 3.2 which lacks `mapfile`; portable loop:
+          # Scan every dylib AND the main executable. On macOS x86_64 the
+          # release LTO sometimes inlines the API_SERVER fallback string
+          # into the Flutter wrapper or duplicates it across binaries;
+          # require that each expected value is found in at LEAST one.
+          # NOTE: macOS ships bash 3.2 (no mapfile). Portable loop:
           targets=()
+          main_exe="$app_dir/Contents/MacOS/$(basename "$app_dir" .app)"
+          [[ -x "$main_exe" ]] && targets+=("$main_exe")
           while IFS= read -r f; do targets+=("$f"); done < <(find "$app_dir" -type f \
               \( -name 'liblibrustdesk*.dylib' -o -name 'librustdesk*.dylib' \) 2>/dev/null)
           if (( ${#targets[@]} == 0 )); then

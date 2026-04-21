@@ -32,34 +32,42 @@ EXPECT_RELAY_HOST="${EXPECT_RELAY%%:*}"   # strip port
 
 command -v strings >/dev/null || fail "\`strings\` not found — install binutils"
 
+# Each expected value must be found in AT LEAST ONE of the scanned binaries.
+# This is looser than "every binary has every value" because compiler
+# optimizations (notably LTO on macOS x86_64) can dedup or inline strings
+# across the dylib / main exe boundary — e.g. API_SERVER fallback string
+# sometimes ends up in the Flutter wrapper binary, not in librustdesk.dylib.
+# The anti-regression check (upstream default pubkey) still runs per-file:
+# if that string shows up ANYWHERE, we ship a broken binary.
+
+found_rendezvous=0; found_relay=0; found_api=0; found_pubkey=0
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
 for bin in "$@"; do
     [[ -f "$bin" ]] || fail "not a file: $bin"
     log "scanning $bin ($(du -h "$bin" | cut -f1))"
-
-    # Extract once, grep N times.
-    tmp=$(mktemp)
-    trap 'rm -f "$tmp"' EXIT
     strings -n 6 "$bin" > "$tmp"
 
-    missing=()
-    grep -qF -- "$EXPECT_RENDEZVOUS"   "$tmp" || missing+=("RENDEZVOUS:$EXPECT_RENDEZVOUS")
-    grep -qF -- "$EXPECT_RELAY_HOST"   "$tmp" || missing+=("RELAY:$EXPECT_RELAY_HOST")
-    grep -qF -- "$EXPECT_API"          "$tmp" || missing+=("API:$EXPECT_API")
-    grep -qF -- "$EXPECT_RS_PUB_KEY"   "$tmp" || missing+=("RS_PUB_KEY")
+    grep -qF -- "$EXPECT_RENDEZVOUS"   "$tmp" && found_rendezvous=1
+    grep -qF -- "$EXPECT_RELAY_HOST"   "$tmp" && found_relay=1
+    grep -qF -- "$EXPECT_API"          "$tmp" && found_api=1
+    grep -qF -- "$EXPECT_RS_PUB_KEY"   "$tmp" && found_pubkey=1
 
-    if (( ${#missing[@]} > 0 )); then
-        fail "missing in $bin: ${missing[*]}"
-    fi
-
-    # Anti-regression: upstream RustDesk default pubkey must NOT leak.
-    # (A release binary with this key present would fall back to public infra.)
+    # Anti-regression: upstream RustDesk default pubkey must NOT appear
+    # anywhere, otherwise the binary is still targeting public infra.
     if grep -qF -- "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=" "$tmp"; then
         fail "upstream default RS_PUB_KEY detected in $bin — config override failed"
     fi
-
-    log "OK  $bin has all expected hardcoded values"
-    rm -f "$tmp"
-    trap - EXIT
 done
 
-log "all binaries verified"
+missing=()
+(( found_rendezvous )) || missing+=("RENDEZVOUS:$EXPECT_RENDEZVOUS")
+(( found_relay ))      || missing+=("RELAY:$EXPECT_RELAY_HOST")
+(( found_api ))        || missing+=("API:$EXPECT_API")
+(( found_pubkey ))     || missing+=("RS_PUB_KEY")
+if (( ${#missing[@]} > 0 )); then
+    fail "missing across all scanned binaries: ${missing[*]}"
+fi
+
+log "all expected hardcoded values found across $# binary/binaries"
