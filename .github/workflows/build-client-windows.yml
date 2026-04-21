@@ -252,11 +252,13 @@ jobs:
           fi
           echo "release dir: $release_dir"
           ls -la "$release_dir"
-          # Scan the main exe + native DLL. Git-Bash ships `strings`.
+          # Scan only the Rust-compiled DLL. rustdesk.exe is a stripped
+          # Flutter wrapper without the hardcoded strings.
           mapfile -t targets < <(find "$release_dir" -maxdepth 2 -type f \
-              \( -iname "*.exe" -o -iname "librustdesk*.dll" -o -iname "rustdesk*.dll" \))
+              \( -iname "librustdesk*.dll" -o -iname "rustdesk*.dll" \) 2>/dev/null)
           if (( ${#targets[@]} == 0 )); then
-              echo "::error::no binaries found to scan"
+              echo "::error::no librustdesk*.dll found in $release_dir"
+              find "$release_dir" -maxdepth 2 -type f | head -30
               exit 1
           fi
           client/scripts/verify-hardcoded.sh "${targets[@]}"
