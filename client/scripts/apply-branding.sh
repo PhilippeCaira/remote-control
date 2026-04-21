@@ -130,7 +130,7 @@ RS_PUB_KEY_ESC=$(sed_escape "$RS_PUB_KEY")
 API_SERVER_ESC=$(sed_escape "$API_SERVER")
 
 log "patching $CONFIG_RS"
-sed -i -E \
+sed -i.sedbak -E \
     -e "s|&\[\"rs-ny\.rustdesk\.com\"\]|\&[\"${RENDEZVOUS_ESC}\"]|" \
     -e "s|\"OeVuKk5nlHiXp\+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=\"|\"${RS_PUB_KEY_ESC}\"|" \
     "$CONFIG_RS"
@@ -146,7 +146,7 @@ if grep -qF "rs-ny.rustdesk.com" "$CONFIG_RS" \
 fi
 
 log "patching $COMMON_RS"
-sed -i -E \
+sed -i.sedbak -E \
     -e "s|\"https://admin\.rustdesk\.com\"\.to_owned\(\)|\"${API_SERVER_ESC}\".to_owned()|" \
     "$COMMON_RS"
 
@@ -164,7 +164,7 @@ COPYRIGHT_ESC=$(sed_escape "$BRAND_COPYRIGHT")
 
 # 4.1 Rust: APP_NAME + ORG defaults in config.rs (RwLock initial values).
 log "patching APP_NAME/ORG in $CONFIG_RS"
-sed -i -E \
+sed -i.sedbak -E \
     -e "s|RwLock::new\(\"RustDesk\"\.to_owned\(\)\)|RwLock::new(\"${APP_NAME_ESC}\".to_owned())|" \
     -e "s|RwLock::new\(\"com\.carriez\"\.to_owned\(\)\)|RwLock::new(\"${ORG_ESC}\".to_owned())|" \
     "$CONFIG_RS"
@@ -178,7 +178,7 @@ ANDROID_GRADLE="$UPSTREAM/flutter/android/app/build.gradle"
 ANDROID_MANIFEST="$UPSTREAM/flutter/android/app/src/main/AndroidManifest.xml"
 
 log "patching $ANDROID_GRADLE"
-sed -i -E \
+sed -i.sedbak -E \
     -e "s|applicationId \"com\.carriez\.flutter_hbb\"|applicationId \"${ANDROID_APP_ID_ESC}\"|" \
     "$ANDROID_GRADLE"
 grep -qF "applicationId \"${BRAND_ANDROID_APP_ID}\"" "$ANDROID_GRADLE" \
@@ -192,7 +192,7 @@ log "patching $ANDROID_MANIFEST"
 # via that path. The user-visible identity comes from applicationId in
 # build.gradle (which we do change). This matches Android's current
 # namespace-vs-applicationId convention.
-sed -i -E \
+sed -i.sedbak -E \
     -e "s|android:label=\"RustDesk Input\"|android:label=\"${APP_NAME_ESC} Input\"|" \
     -e "s|android:label=\"RustDesk\"|android:label=\"${APP_NAME_ESC}\"|" \
     "$ANDROID_MANIFEST"
@@ -202,7 +202,7 @@ grep -qF "android:label=\"${BRAND_APP_NAME}\""  "$ANDROID_MANIFEST" \
 # 4.3 macOS: PRODUCT_NAME, PRODUCT_BUNDLE_IDENTIFIER, PRODUCT_COPYRIGHT.
 MACOS_XCCONFIG="$UPSTREAM/flutter/macos/Runner/Configs/AppInfo.xcconfig"
 log "patching $MACOS_XCCONFIG"
-sed -i -E \
+sed -i.sedbak -E \
     -e "s|^PRODUCT_NAME *= *RustDesk\$|PRODUCT_NAME = ${APP_NAME_ESC}|" \
     -e "s|^PRODUCT_BUNDLE_IDENTIFIER *= *com\.carriez\.flutterHbb\$|PRODUCT_BUNDLE_IDENTIFIER = ${MACOS_BUNDLE_ID_ESC}|" \
     -e "s|^PRODUCT_COPYRIGHT *=.*\$|PRODUCT_COPYRIGHT = ${COPYRIGHT_ESC}|" \
@@ -224,6 +224,11 @@ for f in "${LEAK_FILES[@]}"; do
         log "WARN: upstream brand token still present in $f — review the site list"
     fi
 done
+
+# 4.5 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
+# on GNU sed AND BSD sed. Without the attached extension, BSD treats the
+# next flag as an extension and the command misparses).
+find "$UPSTREAM" -name '*.sedbak' -delete
 
 # ---------------------------------------------------------------------------
 # 5. Copy branded assets (non-fatal if missing; CI's release workflow has
