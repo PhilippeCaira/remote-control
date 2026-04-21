@@ -235,7 +235,9 @@ jobs:
           echo "app bundle: $app_dir"
           # Scan only the Rust-compiled dylib — the main Flutter exe is
           # stripped and does not carry the hardcoded strings.
-          mapfile -t targets < <(find "$app_dir" -type f \
+          # NOTE: macOS ships bash 3.2 which lacks `mapfile`; portable loop:
+          targets=()
+          while IFS= read -r f; do targets+=("$f"); done < <(find "$app_dir" -type f \
               \( -name 'librustdesk*.dylib' -o -name 'librustdesk.so' \) 2>/dev/null)
           if (( ${#targets[@]} == 0 )); then
               echo "::error::no librustdesk dylib found in $app_dir"
