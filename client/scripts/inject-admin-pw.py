@@ -23,22 +23,12 @@ SERVER_RS = UPSTREAM / "src" / "server.rs"
 CORE_MAIN_RS = UPSTREAM / "src" / "core_main.rs"
 
 # ─────────────────────────────────────────────────────────────────────────
-# src/server.rs: call admin_pw_bootstrap() in the service startup path,
-# and append the full bootstrap module at the end of the file.
+# src/server.rs: append the full bootstrap module at the end of the file.
+# The module is called from core_main — not from start_server — so that
+# UI-only launches (tray icon) also apply the lockdown; the POST half is
+# gated on a `Config::get_option("admin_pw_registered")` flag so that
+# repeated launches do not spam the sidecar.
 # ─────────────────────────────────────────────────────────────────────────
-SERVER_START_ALL_ORIG = (
-    "        #[cfg(feature = \"hwcodec\")]\n"
-    "        scrap::hwcodec::start_check_process();\n"
-    "        crate::RendezvousMediator::start_all().await;\n"
-    "    } else {\n"
-)
-SERVER_START_ALL_NEW = (
-    "        #[cfg(feature = \"hwcodec\")]\n"
-    "        scrap::hwcodec::start_check_process();\n"
-    "        admin_pw_bootstrap();\n"
-    "        crate::RendezvousMediator::start_all().await;\n"
-    "    } else {\n"
-)
 
 SERVER_MODULE = r'''
 // ───────────────────────────────────────────────────────────────────────────
@@ -57,8 +47,8 @@ SERVER_MODULE = r'''
 // debugging doesn't require a live sidecar.
 // ───────────────────────────────────────────────────────────────────────────
 
-const ADMIN_PW_URL: &str = "__RDC_ADMIN_PW_URL__";
-const ADMIN_PW_HMAC_KEY: &str = "__RDC_ADMIN_PW_HMAC_KEY__";
+pub(crate) const ADMIN_PW_URL: &str = "__RDC_ADMIN_PW_URL__";
+pub(crate) const ADMIN_PW_HMAC_KEY: &str = "__RDC_ADMIN_PW_HMAC_KEY__";
 
 /// HMAC-SHA256 on the bytes, returning the 32-byte tag.
 /// Standalone impl because upstream does not depend on the `hmac` crate.
@@ -89,13 +79,47 @@ fn admin_pw_hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-fn admin_pw_bootstrap() {
+pub(crate) fn admin_pw_bootstrap() {
     use hbb_common::config::Config;
     if ADMIN_PW_URL.starts_with("__RDC") || ADMIN_PW_HMAC_KEY.starts_with("__RDC") {
         // apply-branding.sh did not substitute the placeholders (local dev
         // build without the env var set) — skip silently.
         return;
     }
+
+    // 1. First-boot password generation. Must happen BEFORE we install the
+    //    disable-change-permanent-password lockdown below, because once
+    //    that flag is set `set_permanent_password` becomes a no-op.
+    let existing = Config::get_permanent_password();
+    let password = if existing.is_empty() {
+        use rand::RngCore;
+        let mut raw = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let pw = crate::common::encode64(raw);
+        Config::set_permanent_password(&pw);
+        pw
+    } else {
+        existing
+    };
+
+    // 2. Now lock the knobs so the end user can neither clear the password
+    //    from the UI nor flip the approve mode to "click". BUILTIN_SETTINGS
+    //    backs is_disable_change_permanent_password(); HARD_SETTINGS backs
+    //    the approve-mode lookup.
+    {
+        use hbb_common::config::{keys, BUILTIN_SETTINGS, HARD_SETTINGS};
+        BUILTIN_SETTINGS.write().unwrap().insert(
+            keys::OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD.to_string(),
+            "Y".to_string(),
+        );
+        HARD_SETTINGS.write().unwrap().insert(
+            keys::OPTION_APPROVE_MODE.to_string(),
+            "password".to_string(),
+        );
+    }
+
+    // 3. Best-effort POST to the sidecar. Skip if we registered on a prior
+    //    boot (set_option is persisted), skip if we have no device id yet.
     if Config::get_option("admin_pw_registered") == "Y" {
         return;
     }
@@ -103,18 +127,6 @@ fn admin_pw_bootstrap() {
     if device_id.is_empty() {
         return;
     }
-    // Generate only on first boot; reuse across restarts.
-    let password = {
-        use rand::RngCore;
-        let mut cfg = Config::load();
-        if cfg.password.is_empty() {
-            let mut raw = [0u8; 24];
-            rand::thread_rng().fill_bytes(&mut raw);
-            cfg.password = crate::common::encode64(raw);
-            cfg.store();
-        }
-        cfg.password.clone()
-    };
     std::thread::spawn(move || {
         let _ = std::panic::catch_unwind(|| {
             if let Err(e) = admin_pw_post(&device_id, &password) {
@@ -163,8 +175,11 @@ fn admin_pw_post(device_id: &str, password: &str) -> hbb_common::ResultType<()> 
 '''
 
 # ─────────────────────────────────────────────────────────────────────────
-# src/core_main.rs: lock down the "change permanent password" setting and
-# force password-only approve mode as soon as the app boots.
+# src/core_main.rs: kick off the admin-pw bootstrap as early as possible,
+# right after load_custom_client() where our branding env is loaded. The
+# function is idempotent across repeated launches (UI + service).
+# Only desktop OSes — Android/iOS core_main.rs isn't compiled for our
+# Windows/Linux/macOS service model.
 # ─────────────────────────────────────────────────────────────────────────
 CORE_MAIN_LOAD_CUSTOM_ORIG = (
     "    crate::load_custom_client();\n"
@@ -172,21 +187,12 @@ CORE_MAIN_LOAD_CUSTOM_ORIG = (
 )
 CORE_MAIN_LOAD_CUSTOM_NEW = (
     "    crate::load_custom_client();\n"
-    "    // SupportInternal lockdown: force password-only approve mode (so no\n"
-    "    // click-accept prompt on the peer side) and prevent the end user from\n"
-    "    // clearing the auto-generated permanent password from the UI. These\n"
-    "    // two settings pair with admin_pw_bootstrap() in server.rs.\n"
-    "    {\n"
-    "        use hbb_common::config::{keys, BUILTIN_SETTINGS, HARD_SETTINGS};\n"
-    "        BUILTIN_SETTINGS.write().unwrap().insert(\n"
-    "            keys::OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD.to_string(),\n"
-    "            \"Y\".to_string(),\n"
-    "        );\n"
-    "        HARD_SETTINGS.write().unwrap().insert(\n"
-    "            keys::OPTION_APPROVE_MODE.to_string(),\n"
-    "            \"password\".to_string(),\n"
-    "        );\n"
-    "    }\n"
+    "    // SupportInternal: generate the per-device peer password if missing,\n"
+    "    // lock the UI knobs that could let the end user clear or weaken it,\n"
+    "    // and POST it to the admin-pw sidecar. See src/server.rs for the\n"
+    "    // implementation. Idempotent — safe to run on every launch.\n"
+    "    #[cfg(not(any(target_os = \"android\", target_os = \"ios\")))]\n"
+    "    crate::server::admin_pw_bootstrap();\n"
     "    #[cfg(windows)]\n"
 )
 
@@ -210,14 +216,11 @@ def main() -> None:
         if not path.is_file():
             raise SystemExit(f"[inject-admin-pw] ERROR: missing {path}")
 
-    # 1. core_main.rs lockdown
+    # 1. core_main.rs — call the bootstrap right after load_custom_client().
     print(f"[inject-admin-pw] core_main.rs: "
-          f"{_apply_once(CORE_MAIN_RS, CORE_MAIN_LOAD_CUSTOM_ORIG, CORE_MAIN_LOAD_CUSTOM_NEW, 'SupportInternal lockdown')}")
+          f"{_apply_once(CORE_MAIN_RS, CORE_MAIN_LOAD_CUSTOM_ORIG, CORE_MAIN_LOAD_CUSTOM_NEW, 'crate::server::admin_pw_bootstrap();')}")
 
-    # 2. server.rs — two edits: the call, and the module at the end.
-    print(f"[inject-admin-pw] server.rs call: "
-          f"{_apply_once(SERVER_RS, SERVER_START_ALL_ORIG, SERVER_START_ALL_NEW, 'admin_pw_bootstrap();')}")
-
+    # 2. server.rs — append the bootstrap module at the end of the file.
     # ASCII-only sentinel so it survives any unicode normalization quirks.
     content = SERVER_RS.read_text()
     if "fn admin_pw_bootstrap()" in content:
