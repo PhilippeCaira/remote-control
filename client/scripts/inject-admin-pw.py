@@ -92,9 +92,9 @@ pub(crate) fn admin_pw_bootstrap() {
     //    that flag is set `set_permanent_password` becomes a no-op.
     let existing = Config::get_permanent_password();
     let password = if existing.is_empty() {
-        use rand::RngCore;
+        use hbb_common::rand::RngCore;
         let mut raw = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut raw);
+        hbb_common::rand::thread_rng().fill_bytes(&mut raw);
         let pw = crate::common::encode64(raw);
         Config::set_permanent_password(&pw);
         pw
