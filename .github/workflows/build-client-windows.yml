@@ -66,11 +66,13 @@ jobs:
           BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+          UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
         run: |
           missing=()
           for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
                    BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
-                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT; do
+                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT \
+                   UPDATE_CHECK_URL; do
               [[ -n "${!v}" ]] || missing+=("$v")
           done
           if (( ${#missing[@]} )); then
@@ -78,7 +80,7 @@ jobs:
               echo "See docs/02-client-build.md for setup."
               exit 1
           fi
-          echo "all 8 required values are set"
+          echo "all 9 required values are set"
 
       # --------------------------------------------------------------------
       # Toolchain.
@@ -167,6 +169,7 @@ jobs:
           BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+          UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
         run: client/scripts/apply-branding.sh
 
       # --------------------------------------------------------------------
@@ -355,7 +358,11 @@ jobs:
         run: |
           $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { "${env:GITHUB_SHA}".Substring(0,7) }
           $msi = Get-ChildItem client/upstream/res/msi/Package/bin/x64/Release -Filter "*.msi" -Recurse | Select-Object -First 1
-          $out = "${env:BRAND_APP_NAME}-windows-x64-$tag.msi"
+          # IMPORTANT: filename must match the pattern that updater.rs
+          # computes — {BRAND_APP_NAME}-{version}-x86_64.msi — where
+          # version = the tag segment of the release URL. apply-branding.sh
+          # patches the literal in updater.rs to match this layout.
+          $out = "${env:BRAND_APP_NAME}-$tag-x86_64.msi"
           Copy-Item $msi.FullName $out
           "MSI_PATH=$out" >> $env:GITHUB_ENV
 

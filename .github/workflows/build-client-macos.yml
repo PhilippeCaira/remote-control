@@ -70,11 +70,13 @@ jobs:
           BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+          UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
         run: |
           missing=()
           for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
                    BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
-                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT; do
+                   BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT \
+                   UPDATE_CHECK_URL; do
               [[ -n "${!v}" ]] || missing+=("$v")
           done
           if (( ${#missing[@]} )); then
@@ -82,7 +84,7 @@ jobs:
               echo "See docs/02-client-build.md for setup."
               exit 1
           fi
-          echo "all 8 required values are set"
+          echo "all 9 required values are set"
 
       # --------------------------------------------------------------------
       # System deps.
@@ -181,6 +183,7 @@ jobs:
           BRAND_ANDROID_APP_ID:  ${{ vars.BRAND_ANDROID_APP_ID }}
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
+          UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
         run: client/scripts/apply-branding.sh
 
       # --------------------------------------------------------------------

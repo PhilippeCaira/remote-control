@@ -1,11 +1,17 @@
 name: Release
 
-# Triggered by a version tag. Orchestrates the four per-platform
-# build workflows, collects every artefact, computes checksums, and
-# publishes a GitHub Release with the full installer set attached.
+# Triggered by any of:
+#   - push to main (auto-version v0.0.<run_number> — CD mode)
+#   - push of a v* tag (explicit release)
+#   - workflow_dispatch (manual)
+# Orchestrates the four per-platform build workflows, collects every
+# artefact, computes checksums, publishes a GitHub Release, and refreshes
+# the version feed on GitHub Pages so installed clients upgrade on the
+# next poll.
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -20,6 +26,8 @@ concurrency:
 
 permissions:
   contents: write   # required by softprops/action-gh-release
+  pages: write      # deploy-pages writes to the Pages environment
+  id-token: write   # OIDC for deploy-pages
 
 jobs:
   # --------------------------------------------------------------------------
@@ -38,12 +46,23 @@ jobs:
         env:
           DISPATCH_REF: ${{ inputs.ref }}
         run: |
+          # Precedence:
+          #   1. workflow_dispatch input (explicit branch/tag)
+          #   2. git tag (refs/tags/v*) — explicit release
+          #   3. main branch push — auto-versioned CD
+          #   4. anything else — fallback to branch name
           if [[ -n "$DISPATCH_REF" ]]; then
               ref="$DISPATCH_REF"
               tag="$DISPATCH_REF"
-          else
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
               ref="${GITHUB_REF}"
               tag="${GITHUB_REF#refs/tags/}"
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+              ref="${GITHUB_REF}"
+              tag="v0.0.${GITHUB_RUN_NUMBER}"
+          else
+              ref="${GITHUB_REF}"
+              tag="${GITHUB_REF#refs/heads/}"
           fi
           # Sanitize: branch names contain '/' which is a directory separator.
           # Filenames downstream (RemoteControl-linux-$tag.tar.gz, etc.) would
@@ -192,3 +211,50 @@ jobs:
             dist/*.apk
             dist/*.tar.gz
             dist/SHA256SUMS.txt
+
+  # --------------------------------------------------------------------------
+  # Refresh the version feed on GitHub Pages. Installed clients POST to
+  # https://<owner>.github.io/<repo>/version/latest.json once a day
+  # (see client/upstream/libs/hbb_common/src/lib.rs, patched by
+  # apply-branding.sh to point here instead of api.rustdesk.com).
+  # The body format matches hbb_common::VersionCheckResponse.
+  #
+  # Requires Settings → Pages → Source: "GitHub Actions" (done once).
+  # --------------------------------------------------------------------------
+  deploy-version-feed:
+    name: Deploy version feed (Pages)
+    needs: [prepare, publish]
+    runs-on: ubuntu-22.04
+    # Skip on pre-releases so release candidates don't auto-upgrade
+    # production clients. Tag skipping mirrors the `prerelease:` flag above.
+    if: ${{ !contains(needs.prepare.outputs.tag, '-rc') && !contains(needs.prepare.outputs.tag, '-alpha') && !contains(needs.prepare.outputs.tag, '-beta') }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Generate version feed
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p _site/version
+          cat > _site/version/latest.json <<EOF
+          {"url":"https://github.com/${REPO}/releases/tag/${TAG}"}
+          EOF
+          # Also ship a human-readable index so hitting the Pages root
+          # in a browser shows something useful rather than a 404.
+          cat > _site/index.html <<EOF
+          <!doctype html><meta charset="utf-8"><title>${REPO} — version feed</title>
+          <h1>${REPO} — version feed</h1>
+          <p>Installed clients poll <code>/version/latest.json</code> once a day.</p>
+          <p>Current: <code>${TAG}</code> — see
+          <a href="https://github.com/${REPO}/releases/tag/${TAG}">release notes</a>.</p>
+          EOF
+          cat _site/version/latest.json
+      - name: Upload Pages artefact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -21,6 +21,7 @@ missing. The full list with explanations is in
 | `BRAND_ANDROID_APP_ID`  | GitHub Variable                          | `com.example.remotecontrol`           |
 | `BRAND_MACOS_BUNDLE_ID` | GitHub Variable                          | `com.example.remotecontrol`           |
 | `BRAND_COPYRIGHT`       | GitHub Variable                          | `Copyright (c) 2026 Example SA`       |
+| `UPDATE_CHECK_URL`      | GitHub Variable                          | `https://<owner>.github.io/<repo>/version/latest.json` |
 
 > **Secrets vs. Variables.** Only the three server endpoints are
 > secrets: leaking them does not give attacker access but needlessly
@@ -54,6 +55,7 @@ gh variable set BRAND_ORG             --repo "$REPO" --body "$BRAND_ORG"
 gh variable set BRAND_ANDROID_APP_ID  --repo "$REPO" --body "$BRAND_ANDROID_APP_ID"
 gh variable set BRAND_MACOS_BUNDLE_ID --repo "$REPO" --body "$BRAND_MACOS_BUNDLE_ID"
 gh variable set BRAND_COPYRIGHT       --repo "$REPO" --body "$BRAND_COPYRIGHT"
+gh variable set UPDATE_CHECK_URL      --repo "$REPO" --body "$UPDATE_CHECK_URL"
 
 # Verify
 gh secret list   --repo "$REPO"
@@ -61,7 +63,7 @@ gh variable list --repo "$REPO"
 ```
 
 The first workflow run (push a tag or click "Run workflow") will gate
-on the presence of all eight values and fail fast with a clear
+on the presence of all nine values and fail fast with a clear
 message if any is missing.
 
 ## How the substitution works

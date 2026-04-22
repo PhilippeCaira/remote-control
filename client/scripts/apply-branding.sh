@@ -66,6 +66,7 @@ fi
 : "${BRAND_ANDROID_APP_ID:?set BRAND_ANDROID_APP_ID (e.g. com.example.remotecontrol)}"
 : "${BRAND_MACOS_BUNDLE_ID:?set BRAND_MACOS_BUNDLE_ID (e.g. com.example.remotecontrol)}"
 : "${BRAND_COPYRIGHT:?set BRAND_COPYRIGHT (e.g. \"Copyright (c) 2026 Example SA\")}"
+: "${UPDATE_CHECK_URL:?set UPDATE_CHECK_URL (e.g. https://owner.github.io/repo/version/latest.json)}"
 
 # Cheap sanity checks. Hard to catch every invalid input via regex alone,
 # but these rule out the most common mistakes.
@@ -212,7 +213,34 @@ grep -qE "^PRODUCT_NAME *= *${BRAND_APP_NAME}\$"            "$MACOS_XCCONFIG" \
 grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCCONFIG" \
     || fail "PRODUCT_BUNDLE_IDENTIFIER substitution failed in $MACOS_XCCONFIG"
 
-# 4.4 Anchor the four hardcoded values in a `#[used] static` so LTO cannot
+# 4.4 Auto-update endpoint and Windows MSI filename pattern.
+#
+# Upstream checks https://api.rustdesk.com/version/latest and expects MSIs
+# named rustdesk-<v>-x86_64.msi. Both are rewritten here so a branded build
+# consumes our release feed on github.io and downloads our branded MSI.
+HBB_LIB_RS="$UPSTREAM/libs/hbb_common/src/lib.rs"
+UPDATER_RS="$UPSTREAM/src/updater.rs"
+UPDATE_CHECK_URL_ESC=$(sed_escape "$UPDATE_CHECK_URL")
+
+log "patching update-check URL in $HBB_LIB_RS"
+sed -i.sedbak -E \
+    -e "s|\"https://api\.rustdesk\.com/version/latest\"|\"${UPDATE_CHECK_URL_ESC}\"|" \
+    "$HBB_LIB_RS"
+grep -qF "\"${UPDATE_CHECK_URL}\"" "$HBB_LIB_RS" \
+    || fail "UPDATE_CHECK_URL substitution failed in $HBB_LIB_RS"
+
+log "patching MSI filename pattern in $UPDATER_RS"
+# The string appears twice in a #[cfg(target_os="windows")] block; replace
+# both at once. The flutter branch uses rustdesk-<v>-x86_64.<ext>; the
+# sciter branch rustdesk-<v>-x86-sciter.exe. We brand both.
+sed -i.sedbak -E \
+    -e "s|\"\{\}/rustdesk-\{\}-x86_64\.\{\}\"|\"\{\}/${APP_NAME_ESC}-\{\}-x86_64.\{\}\"|" \
+    -e "s|\"\{\}/rustdesk-\{\}-x86-sciter\.exe\"|\"\{\}/${APP_NAME_ESC}-\{\}-x86-sciter.exe\"|" \
+    "$UPDATER_RS"
+grep -qF "${BRAND_APP_NAME}-{}-x86_64" "$UPDATER_RS" \
+    || fail "MSI filename-pattern substitution failed in $UPDATER_RS"
+
+# 4.5 Anchor the four hardcoded values in a `#[used] static` so LTO cannot
 # eliminate them. macOS x86_64 aggressive DCE otherwise strips the API
 # fallback literal from both the dylib and the wrapper, breaking
 # verify-hardcoded. Linux / Windows / macOS arm64 don't need this but the
@@ -237,7 +265,7 @@ EOF
     log "appended _RDC_BUILD_INFO_ANCHOR to $CONFIG_RS"
 fi
 
-# 4.5 Global regression check: no upstream brand strings should remain.
+# 4.6 Global regression check: no upstream brand strings should remain.
 LEAK_FILES=(
     "$CONFIG_RS"
     "$ANDROID_GRADLE"
@@ -250,7 +278,7 @@ for f in "${LEAK_FILES[@]}"; do
     fi
 done
 
-# 4.6 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
+# 4.7 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
 # on GNU sed AND BSD sed. Without the attached extension, BSD treats the
 # next flag as an extension and the command misparses).
 find "$UPSTREAM" -name '*.sedbak' -delete
