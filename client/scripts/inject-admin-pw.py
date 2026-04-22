@@ -118,6 +118,30 @@ pub(crate) fn admin_pw_bootstrap() {
         );
     }
 
+    // 2b. Wipe any runtime override of the server endpoints. Upstream stores
+    //     `custom-rendezvous-server`, `relay-server`, `key` and `api-server`
+    //     in the per-user config TOML the moment the user touches them (or
+    //     some code paths cache them after first connect). Those shadow the
+    //     baked-in consts forever, so a rebrand — changing the GitHub
+    //     Secrets and rolling out a new MSI — would silently have no effect
+    //     on already-installed clients. Clearing them on every boot forces
+    //     the fall-through to the freshly-baked consts from the most
+    //     recent release. Pair of `is_empty()` guards keeps the common
+    //     case free of disk writes.
+    {
+        use hbb_common::config::{keys, Config};
+        for k in [
+            keys::OPTION_CUSTOM_RENDEZVOUS_SERVER,
+            keys::OPTION_API_SERVER,
+            keys::OPTION_KEY,
+            keys::OPTION_RELAY_SERVER,
+        ] {
+            if !Config::get_option(k).is_empty() {
+                Config::set_option(k.to_string(), String::new());
+            }
+        }
+    }
+
     // 3. Best-effort POST to the sidecar. Skip if we registered on a prior
     //    boot (set_option is persisted), skip if we have no device id yet.
     if Config::get_option("admin_pw_registered") == "Y" {
