@@ -198,7 +198,7 @@ CORE_MAIN_LOAD_CUSTOM_NEW = (
 
 
 def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
     if sentinel in content:
         return "already applied"
     if orig not in content:
@@ -207,7 +207,7 @@ def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
             f"Did client/upstream drift from the pinned version? First line of the anchor:\n"
             f"  {orig.splitlines()[0]!r}"
         )
-    path.write_text(content.replace(orig, new, 1))
+    path.write_text(encoding="utf-8", data=content.replace(orig, new, 1))
     return "applied"
 
 
@@ -222,11 +222,11 @@ def main() -> None:
 
     # 2. server.rs — append the bootstrap module at the end of the file.
     # ASCII-only sentinel so it survives any unicode normalization quirks.
-    content = SERVER_RS.read_text()
+    content = SERVER_RS.read_text(encoding="utf-8")
     if "fn admin_pw_bootstrap()" in content:
         print("[inject-admin-pw] server.rs module: already applied")
     else:
-        SERVER_RS.write_text(content.rstrip() + "\n" + SERVER_MODULE)
+        SERVER_RS.write_text(encoding="utf-8", data=content.rstrip() + "\n" + SERVER_MODULE)
         print("[inject-admin-pw] server.rs module: applied")
 
 

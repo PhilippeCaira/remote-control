@@ -312,12 +312,9 @@ jobs:
           EXPECT_RELAY:      ${{ secrets.RENDEZVOUS_SERVER }}:21117
           EXPECT_API:        ${{ secrets.API_SERVER }}
           EXPECT_RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
-          EXPECT_ADMIN_PW_URL:        ${{ secrets.API_SERVER }}/admin-pw
-          BRAND_ADMIN_PW_HMAC_KEY_FULL: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
         run: |
           so_path="client/upstream/flutter/android/app/src/main/jniLibs/${{ matrix.job.android_target }}/librustdesk.so"
           [[ -f "$so_path" ]] || { echo "::error::librustdesk.so missing at $so_path"; exit 1; }
-          export EXPECT_ADMIN_PW_HMAC_KEY_PREFIX="${BRAND_ADMIN_PW_HMAC_KEY_FULL:0:16}"
           client/scripts/verify-hardcoded.sh "$so_path"
 
       # --------------------------------------------------------------------
