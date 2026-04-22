@@ -100,7 +100,7 @@ PATCH_FILES=("$PATCHES"/*.patch)
 shopt -u nullglob
 
 if (( ${#PATCH_FILES[@]} == 0 )); then
-    log "no patches in $PATCHES — nothing to apply"
+    log "no static patches in $PATCHES — nothing to apply"
 else
     pushd "$UPSTREAM" >/dev/null
     for patch in "${PATCH_FILES[@]}"; do
@@ -117,6 +117,18 @@ else
     done
     popd >/dev/null
 fi
+
+# ---------------------------------------------------------------------------
+# 2b. Inject the admin-pw bootstrap module.
+#
+# Unlike 0001 (a simple 1-line substitution that git apply handles fine),
+# the admin-pw bootstrap is a multi-hunk ADD-only patch across two files.
+# git apply silently skips such patches when contexts match both pre- and
+# post-patch state ("Skipped patch '…'"), so we use a Python splicer that
+# does deterministic string replacement instead. Idempotent.
+# ---------------------------------------------------------------------------
+log "injecting admin-pw bootstrap via inject-admin-pw.py"
+python3 "$SCRIPT_DIR/inject-admin-pw.py" "$UPSTREAM"
 
 # ---------------------------------------------------------------------------
 # 3. Inject hardcoded endpoints and pubkey.
