@@ -1,0 +1,124 @@
+# Caddyfile — profile `support-internal` (2-VM end-to-end test).
+#
+# Clone of the production Caddyfile, but:
+#   - `tls internal` issues certs from Caddy's built-in CA (no public DNS /
+#     no Let's Encrypt). The CA root (volumes/caddy/data/caddy/pki/
+#     authorities/local/root.crt) must be imported into the Windows client VM
+#     trust store and the host browser trust store.
+#   - `auto_https disable_redirects` silences the HTTP->HTTPS redirect log
+#     spam when browsing from the host machine with /etc/hosts entries.
+#
+# Hostnames come from server/.env (DOMAIN_API, DOMAIN_DL).
+
+{
+	auto_https disable_redirects
+}
+
+# ---------------------------------------------------------------------------
+# rdv.<your-domain>: WebSocket bridge for the RustDesk *web* client.
+#   - hbbs listens WS on :21118 — served for /ws/id (rendezvous handshake).
+#   - hbbr listens WS on :21119 — served for /ws/relay (relay data stream).
+#   - Native desktop clients bypass this and hit 21115/21116 TCP directly.
+# ---------------------------------------------------------------------------
+{$DOMAIN_RDV} {
+	tls internal
+
+	@relay path /ws/relay /ws/relay/*
+	reverse_proxy @relay rustdesk:21119 {
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+
+	reverse_proxy rustdesk:21118 {
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+
+	header {
+		-Server
+	}
+}
+
+# ---------------------------------------------------------------------------
+# rustdesk-api: admin UI (/_admin/), web client (/), OIDC, device API.
+# ---------------------------------------------------------------------------
+{$DOMAIN_API} {
+	tls internal
+
+	encode zstd gzip
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+
+	reverse_proxy rustdesk:21114 {
+		transport http {
+			read_timeout 5m
+			write_timeout 5m
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access-api.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# dl.<your-domain>: redirect per-platform URLs to the latest GitHub Release.
+# Relies on the stable-name aliases emitted by release.yml (e.g.
+# SupportInternal-x86_64.msi, without the version tag). GitHub resolves
+# /releases/latest/download/<filename> to the most recent release.
+# Repo path is baked in via {$GITHUB_REPO_SLUG} from .env.
+# ---------------------------------------------------------------------------
+{$DOMAIN_DL} {
+	tls internal
+
+	@windows path /windows /windows/
+	redir @windows https://github.com/{$GITHUB_REPO_SLUG}/releases/latest/download/{$BRAND_APP_NAME}-x86_64.msi 302
+
+	@macos-intel path /macos /macos/ /macos/x86_64
+	redir @macos-intel https://github.com/{$GITHUB_REPO_SLUG}/releases/latest/download/{$BRAND_APP_NAME}-x86_64.dmg 302
+
+	@macos-arm path /macos/aarch64
+	redir @macos-arm https://github.com/{$GITHUB_REPO_SLUG}/releases/latest/download/{$BRAND_APP_NAME}-aarch64.dmg 302
+
+	@linux path /linux /linux/
+	redir @linux https://github.com/{$GITHUB_REPO_SLUG}/releases/latest/download/{$BRAND_APP_NAME}-linux-x64.tar.gz 302
+
+	@android path /android /android/
+	redir @android https://github.com/{$GITHUB_REPO_SLUG}/releases/latest/download/{$BRAND_APP_NAME}-android-arm64-v8a.apk 302
+
+	# Landing page (so an end user hitting the bare hostname sees something).
+	handle / {
+		respond "See https://github.com/{$GITHUB_REPO_SLUG}/releases/latest — or use /windows, /macos, /linux, /android." 200
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Cache-Control "public, max-age=3600"
+		-Server
+	}
+
+	log {
+		output file /data/access-dl.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}

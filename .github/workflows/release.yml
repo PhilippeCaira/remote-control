@@ -143,6 +143,32 @@ jobs:
       - name: List artefacts
         run: ls -la dist/
 
+      # --------------------------------------------------------------------
+      # Create versionless "-latest" aliases alongside the versioned files.
+      # This makes it possible to share a permanent, version-agnostic URL
+      # like
+      #   https://github.com/<owner>/<repo>/releases/latest/download/SupportInternal-x86_64.msi
+      # which GitHub serves from whichever release is latest. Caddy on
+      # dl.<domain> then just 302s to that URL.
+      # Pattern: <BRAND>-<tag>-<arch>.<ext> -> <BRAND>-<arch>.<ext>
+      # We copy (not rename) so the versioned files still ship.
+      # --------------------------------------------------------------------
+      - name: Create stable-name aliases
+        working-directory: dist
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BRAND: ${{ vars.BRAND_APP_NAME }}
+        run: |
+          shopt -s nullglob
+          for f in "$BRAND"-"$TAG"-*.msi "$BRAND"-"$TAG"-*.dmg \
+                   "$BRAND"-"$TAG"-*.apk "$BRAND"-"$TAG"-*.tar.gz; do
+              [[ -f "$f" ]] || continue
+              # Strip the -<tag>- segment to produce <BRAND>-<rest>.<ext>
+              alias="${f/-$TAG-/-}"
+              cp -v "$f" "$alias"
+          done
+          ls -la
+
       - name: Compute SHA256SUMS
         working-directory: dist
         run: |

@@ -1,0 +1,29 @@
+# Docker Compose override — profile `support-internal` (2-VM e2e test).
+#
+# Activate by exporting COMPOSE_FILE before running compose commands:
+#   export COMPOSE_FILE=docker-compose.yml:profiles/support-internal/override.yml
+#   docker compose up -d
+#
+# Only difference vs. production: swap the baked Caddyfile for one that
+# serves api.support.internal and dl.support.internal over `tls internal`
+# (Caddy's built-in local CA) instead of Let's Encrypt.
+#
+# Rustdesk service vars (DOMAIN_RDV/DOMAIN_API) already flow from server/.env
+# into docker-compose.yml, so nothing to override there.
+
+services:
+  caddy:
+    environment:
+      # DOMAIN_API and DOMAIN_DL are already forwarded by docker-compose.yml;
+      # DOMAIN_RDV is only needed here because the support-internal Caddyfile
+      # adds a WebSocket bridge for the RustDesk web client.
+      # GITHUB_REPO_SLUG + BRAND_APP_NAME drive the dl.* 302-redirect
+      # targets (.../releases/latest/download/<BRAND>-<arch>.<ext>).
+      DOMAIN_RDV: ${DOMAIN_RDV}
+      GITHUB_REPO_SLUG: ${GITHUB_REPO_SLUG}
+      BRAND_APP_NAME: ${BRAND_APP_NAME}
+    volumes:
+      - ./profiles/support-internal/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./volumes/caddy/data:/data
+      - ./volumes/caddy/config:/config
+      - ./volumes/downloads:/srv/downloads:ro
