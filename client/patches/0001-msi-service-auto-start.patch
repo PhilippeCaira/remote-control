@@ -1,0 +1,13 @@
+diff --git a/res/msi/Package/Fragments/AddRemoveProperties.wxs b/res/msi/Package/Fragments/AddRemoveProperties.wxs
+index ac1d85a86..9dd76fd60 100644
+--- a/res/msi/Package/Fragments/AddRemoveProperties.wxs
++++ b/res/msi/Package/Fragments/AddRemoveProperties.wxs
+@@ -7,7 +7,7 @@
+ 		<Property Id="AddRemovePropertiesFile" Value="1" />
+ 
+ 		<!--STOP_SERVICE is set to 'Y'. Because the config value may be empty or 'Y'-->
+-		<Property Id="STOP_SERVICE" Value="&apos;Y&apos;" />
++		<Property Id="STOP_SERVICE" Value="" />
+ 
+ 		<Property Id="LAUNCH_TRAY_APP" Value="Y" />
+ 
