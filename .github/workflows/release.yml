@@ -1,7 +1,7 @@
 name: Release
 
 # Triggered by any of:
-#   - push to main (auto-version v0.0.<run_number> — CD mode)
+#   - push to master (auto-version v0.0.<run_number> — CD mode)
 #   - push of a v* tag (explicit release)
 #   - workflow_dispatch (manual)
 # Orchestrates the four per-platform build workflows, collects every
@@ -11,7 +11,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -49,7 +49,7 @@ jobs:
           # Precedence:
           #   1. workflow_dispatch input (explicit branch/tag)
           #   2. git tag (refs/tags/v*) — explicit release
-          #   3. main branch push — auto-versioned CD
+          #   3. master branch push — auto-versioned CD
           #   4. anything else — fallback to branch name
           if [[ -n "$DISPATCH_REF" ]]; then
               ref="$DISPATCH_REF"
@@ -57,7 +57,7 @@ jobs:
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
               ref="${GITHUB_REF}"
               tag="${GITHUB_REF#refs/tags/}"
-          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+          elif [[ "$GITHUB_REF" == refs/heads/master ]]; then
               ref="${GITHUB_REF}"
               tag="v0.0.${GITHUB_RUN_NUMBER}"
           else
