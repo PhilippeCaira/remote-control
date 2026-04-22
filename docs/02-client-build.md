@@ -22,6 +22,7 @@ missing. The full list with explanations is in
 | `BRAND_MACOS_BUNDLE_ID` | GitHub Variable                          | `com.example.remotecontrol`           |
 | `BRAND_COPYRIGHT`       | GitHub Variable                          | `Copyright (c) 2026 Example SA`       |
 | `UPDATE_CHECK_URL`      | GitHub Variable                          | `https://<owner>.github.io/<repo>/version/latest.json` |
+| `BRAND_ADMIN_PW_HMAC_KEY` | GitHub Secret                          | output of `openssl rand -base64 32`    |
 
 > **Secrets vs. Variables.** Only the three server endpoints are
 > secrets: leaking them does not give attacker access but needlessly
@@ -45,9 +46,10 @@ set -a; source client/.env; set +a
 REPO=<your-org>/remote-control
 
 # Secrets (kept out of logs)
-gh secret set RENDEZVOUS_SERVER --repo "$REPO" --body "$RENDEZVOUS_SERVER"
-gh secret set RS_PUB_KEY        --repo "$REPO" --body "$RS_PUB_KEY"
-gh secret set API_SERVER        --repo "$REPO" --body "$API_SERVER"
+gh secret set RENDEZVOUS_SERVER       --repo "$REPO" --body "$RENDEZVOUS_SERVER"
+gh secret set RS_PUB_KEY              --repo "$REPO" --body "$RS_PUB_KEY"
+gh secret set API_SERVER              --repo "$REPO" --body "$API_SERVER"
+gh secret set BRAND_ADMIN_PW_HMAC_KEY --repo "$REPO" --body "$BRAND_ADMIN_PW_HMAC_KEY"
 
 # Variables (visible in logs — fine for branding)
 gh variable set BRAND_APP_NAME        --repo "$REPO" --body "$BRAND_APP_NAME"
@@ -63,7 +65,7 @@ gh variable list --repo "$REPO"
 ```
 
 The first workflow run (push a tag or click "Run workflow") will gate
-on the presence of all nine values and fail fast with a clear
+on the presence of all ten values and fail fast with a clear
 message if any is missing.
 
 ## How the substitution works

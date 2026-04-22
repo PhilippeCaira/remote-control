@@ -10,10 +10,16 @@
 # Usage:   verify-hardcoded.sh <path/to/binary>[ <more binaries>...]
 #
 # Required environment:
-#   EXPECT_RENDEZVOUS   e.g. rdv.example.com
-#   EXPECT_RELAY        e.g. rdv.example.com:21117  (hostname only checked)
-#   EXPECT_API          e.g. https://api.example.com
-#   EXPECT_RS_PUB_KEY   base64 ed25519 public key (tr -d '\n' before set)
+#   EXPECT_RENDEZVOUS            e.g. rdv.example.com
+#   EXPECT_RELAY                 e.g. rdv.example.com:21117  (hostname only checked)
+#   EXPECT_API                   e.g. https://api.example.com
+#   EXPECT_RS_PUB_KEY            base64 ed25519 public key (tr -d '\n' before set)
+#   EXPECT_ADMIN_PW_URL          e.g. https://api.example.com/admin-pw
+#   EXPECT_ADMIN_PW_HMAC_KEY_PREFIX
+#                                first 16 chars of the base64 HMAC key
+#                                (full key is ~44 chars; a prefix check avoids
+#                                printing the full secret in CI logs if this
+#                                assertion ever fails)
 #
 # Each binary is scanned with `strings`; every expected value must appear
 # at least once. Any miss fails the script.
@@ -28,6 +34,8 @@ log()  { printf '[verify-hardcoded] %s\n' "$*"; }
 : "${EXPECT_RENDEZVOUS:?set EXPECT_RENDEZVOUS}"
 : "${EXPECT_API:?set EXPECT_API}"
 : "${EXPECT_RS_PUB_KEY:?set EXPECT_RS_PUB_KEY}"
+: "${EXPECT_ADMIN_PW_URL:?set EXPECT_ADMIN_PW_URL}"
+: "${EXPECT_ADMIN_PW_HMAC_KEY_PREFIX:?set EXPECT_ADMIN_PW_HMAC_KEY_PREFIX}"
 EXPECT_RELAY_HOST="${EXPECT_RELAY%%:*}"   # strip port
 
 command -v strings >/dev/null || fail "\`strings\` not found — install binutils"
@@ -41,6 +49,7 @@ command -v strings >/dev/null || fail "\`strings\` not found — install binutil
 # if that string shows up ANYWHERE, we ship a broken binary.
 
 found_rendezvous=0; found_relay=0; found_api=0; found_pubkey=0
+found_admin_pw_url=0; found_admin_pw_key=0
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
@@ -49,10 +58,12 @@ for bin in "$@"; do
     log "scanning $bin ($(du -h "$bin" | cut -f1))"
     strings -n 6 "$bin" > "$tmp"
 
-    grep -qF -- "$EXPECT_RENDEZVOUS"   "$tmp" && found_rendezvous=1
-    grep -qF -- "$EXPECT_RELAY_HOST"   "$tmp" && found_relay=1
-    grep -qF -- "$EXPECT_API"          "$tmp" && found_api=1
-    grep -qF -- "$EXPECT_RS_PUB_KEY"   "$tmp" && found_pubkey=1
+    grep -qF -- "$EXPECT_RENDEZVOUS"                "$tmp" && found_rendezvous=1
+    grep -qF -- "$EXPECT_RELAY_HOST"                "$tmp" && found_relay=1
+    grep -qF -- "$EXPECT_API"                       "$tmp" && found_api=1
+    grep -qF -- "$EXPECT_RS_PUB_KEY"                "$tmp" && found_pubkey=1
+    grep -qF -- "$EXPECT_ADMIN_PW_URL"              "$tmp" && found_admin_pw_url=1
+    grep -qF -- "$EXPECT_ADMIN_PW_HMAC_KEY_PREFIX"  "$tmp" && found_admin_pw_key=1
 
     # Anti-regression: upstream RustDesk default pubkey must NOT appear
     # anywhere, otherwise the binary is still targeting public infra.
@@ -62,10 +73,12 @@ for bin in "$@"; do
 done
 
 missing=()
-(( found_rendezvous )) || missing+=("RENDEZVOUS:$EXPECT_RENDEZVOUS")
-(( found_relay ))      || missing+=("RELAY:$EXPECT_RELAY_HOST")
-(( found_api ))        || missing+=("API:$EXPECT_API")
-(( found_pubkey ))     || missing+=("RS_PUB_KEY")
+(( found_rendezvous ))    || missing+=("RENDEZVOUS:$EXPECT_RENDEZVOUS")
+(( found_relay ))         || missing+=("RELAY:$EXPECT_RELAY_HOST")
+(( found_api ))           || missing+=("API:$EXPECT_API")
+(( found_pubkey ))        || missing+=("RS_PUB_KEY")
+(( found_admin_pw_url ))  || missing+=("ADMIN_PW_URL:$EXPECT_ADMIN_PW_URL")
+(( found_admin_pw_key ))  || missing+=("ADMIN_PW_HMAC_KEY (prefix)")
 if (( ${#missing[@]} > 0 )); then
     fail "missing across all scanned binaries: ${missing[*]}"
 fi

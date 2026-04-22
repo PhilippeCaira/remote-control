@@ -71,12 +71,13 @@ jobs:
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
           UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
+          BRAND_ADMIN_PW_HMAC_KEY: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
         run: |
           missing=()
           for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
                    BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
                    BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT \
-                   UPDATE_CHECK_URL; do
+                   UPDATE_CHECK_URL BRAND_ADMIN_PW_HMAC_KEY; do
               [[ -n "${!v}" ]] || missing+=("$v")
           done
           if (( ${#missing[@]} )); then
@@ -84,7 +85,7 @@ jobs:
               echo "See docs/02-client-build.md for setup."
               exit 1
           fi
-          echo "all 9 required values are set"
+          echo "all 10 required values are set"
 
       # --------------------------------------------------------------------
       # System deps.
@@ -184,6 +185,7 @@ jobs:
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
           UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
+          BRAND_ADMIN_PW_HMAC_KEY: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
         run: client/scripts/apply-branding.sh
 
       # --------------------------------------------------------------------
@@ -239,6 +241,8 @@ jobs:
           EXPECT_RELAY:      ${{ secrets.RENDEZVOUS_SERVER }}:21117
           EXPECT_API:        ${{ secrets.API_SERVER }}
           EXPECT_RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+          EXPECT_ADMIN_PW_URL:        ${{ secrets.API_SERVER }}/admin-pw
+          BRAND_ADMIN_PW_HMAC_KEY_FULL: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
         run: |
           # GNU binutils' `strings` is not installed by default; the
           # `strings` from llvm (installed via brew) works and is on PATH
@@ -266,6 +270,7 @@ jobs:
               find "$app_dir" -maxdepth 6 -type f -name '*.dylib' | head
               exit 1
           fi
+          export EXPECT_ADMIN_PW_HMAC_KEY_PREFIX="${BRAND_ADMIN_PW_HMAC_KEY_FULL:0:16}"
           client/scripts/verify-hardcoded.sh "${targets[@]}"
           echo "APP_DIR=$app_dir" >> "$GITHUB_ENV"
 

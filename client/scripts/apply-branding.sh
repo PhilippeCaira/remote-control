@@ -67,6 +67,7 @@ fi
 : "${BRAND_MACOS_BUNDLE_ID:?set BRAND_MACOS_BUNDLE_ID (e.g. com.example.remotecontrol)}"
 : "${BRAND_COPYRIGHT:?set BRAND_COPYRIGHT (e.g. \"Copyright (c) 2026 Example SA\")}"
 : "${UPDATE_CHECK_URL:?set UPDATE_CHECK_URL (e.g. https://owner.github.io/repo/version/latest.json)}"
+: "${BRAND_ADMIN_PW_HMAC_KEY:?set BRAND_ADMIN_PW_HMAC_KEY (base64 >=32 bytes, openssl rand -base64 32)}"
 
 # Cheap sanity checks. Hard to catch every invalid input via regex alone,
 # but these rule out the most common mistakes.
@@ -82,6 +83,13 @@ fi
 # Guard against accidental leak of the upstream default key.
 if [[ "$RS_PUB_KEY" == "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=" ]]; then
     fail "RS_PUB_KEY equals the upstream RustDesk default — refusing to build"
+fi
+
+# The admin-pw HMAC key must be at least 32 bytes of entropy once
+# base64-decoded. Length check on the b64 string is a cheap proxy
+# (base64(32 bytes) = 44 chars incl. padding).
+if (( ${#BRAND_ADMIN_PW_HMAC_KEY} < 43 )); then
+    fail "BRAND_ADMIN_PW_HMAC_KEY too short — generate with 'openssl rand -base64 32'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -240,7 +248,28 @@ sed -i.sedbak -E \
 grep -qF "${BRAND_APP_NAME}-{}-x86_64" "$UPDATER_RS" \
     || fail "MSI filename-pattern substitution failed in $UPDATER_RS"
 
-# 4.5 Anchor the four hardcoded values in a `#[used] static` so LTO cannot
+# 4.5 admin-pw bootstrap placeholders.
+#
+# client/patches/0002-admin-pw-bootstrap.patch drops two sentinel consts
+# into src/server.rs; we fill them here with the real URL and HMAC key so
+# the baked binary knows who to POST to at first boot. If either is still
+# at its __RDC__ default, admin_pw_bootstrap() exits early (local dev).
+SERVER_RS="$UPSTREAM/src/server.rs"
+ADMIN_PW_URL="${API_SERVER%/}/admin-pw"
+ADMIN_PW_URL_ESC=$(sed_escape "$ADMIN_PW_URL")
+ADMIN_PW_HMAC_KEY_ESC=$(sed_escape "$BRAND_ADMIN_PW_HMAC_KEY")
+
+log "patching admin-pw sentinels in $SERVER_RS"
+sed -i.sedbak -E \
+    -e "s|\"__RDC_ADMIN_PW_URL__\"|\"${ADMIN_PW_URL_ESC}\"|" \
+    -e "s|\"__RDC_ADMIN_PW_HMAC_KEY__\"|\"${ADMIN_PW_HMAC_KEY_ESC}\"|" \
+    "$SERVER_RS"
+grep -qF "\"${ADMIN_PW_URL}\"" "$SERVER_RS" \
+    || fail "ADMIN_PW_URL substitution failed in $SERVER_RS"
+grep -qF "\"${BRAND_ADMIN_PW_HMAC_KEY}\"" "$SERVER_RS" \
+    || fail "ADMIN_PW_HMAC_KEY substitution failed in $SERVER_RS"
+
+# 4.6 Anchor the four hardcoded values in a `#[used] static` so LTO cannot
 # eliminate them. macOS x86_64 aggressive DCE otherwise strips the API
 # fallback literal from both the dylib and the wrapper, breaking
 # verify-hardcoded. Linux / Windows / macOS arm64 don't need this but the
@@ -252,20 +281,22 @@ if ! grep -q "_RDC_BUILD_INFO_ANCHOR" "$CONFIG_RS"; then
     cat >> "$CONFIG_RS" <<EOF
 
 // ── Branded build anchor (added by client/scripts/apply-branding.sh) ─────
-// Keeps the four hardcoded endpoints resident through LTO so post-build
+// Keeps the six hardcoded endpoints resident through LTO so post-build
 // verification (client/scripts/verify-hardcoded.sh) can locate them.
 #[used]
-static _RDC_BUILD_INFO_ANCHOR: [&str; 4] = [
+static _RDC_BUILD_INFO_ANCHOR: [&str; 6] = [
     r"${RENDEZVOUS_SERVER}",
     r"${RS_PUB_KEY}",
     r"${API_SERVER}",
     r"${BRAND_APP_NAME}",
+    r"${ADMIN_PW_URL}",
+    r"${BRAND_ADMIN_PW_HMAC_KEY}",
 ];
 EOF
     log "appended _RDC_BUILD_INFO_ANCHOR to $CONFIG_RS"
 fi
 
-# 4.6 Global regression check: no upstream brand strings should remain.
+# 4.7 Global regression check: no upstream brand strings should remain.
 LEAK_FILES=(
     "$CONFIG_RS"
     "$ANDROID_GRADLE"
@@ -278,7 +309,7 @@ for f in "${LEAK_FILES[@]}"; do
     fi
 done
 
-# 4.7 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
+# 4.8 Remove sed in-place backups (portable pattern: `-i.sedbak -E` works
 # on GNU sed AND BSD sed. Without the attached extension, BSD treats the
 # next flag as an extension and the command misparses).
 find "$UPSTREAM" -name '*.sedbak' -delete
