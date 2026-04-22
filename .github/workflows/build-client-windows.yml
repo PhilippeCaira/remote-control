@@ -192,6 +192,31 @@ jobs:
           if (-not $?) { throw "build.py failed" }
 
       # --------------------------------------------------------------------
+      # Rename the top-level .exe from rustdesk.exe to <BRAND_APP_NAME>.exe.
+      # The Flutter CMakeLists hardcodes BINARY_NAME="rustdesk"; we don't
+      # patch it (other upstream code paths still reference "rustdesk" by
+      # name under cfg(not(feature=flutter)) — out of scope here). Instead
+      # we rename the final .exe post-build so the MSI Product/InstallFolder/
+      # shortcut are consistent with the branding. DLLs stay named
+      # rustdesk* — verify-hardcoded.sh greps for librustdesk*.dll.
+      # --------------------------------------------------------------------
+      - name: Brand main exe
+        shell: pwsh
+        env:
+          BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
+        run: |
+          $release = "client/upstream/flutter/build/windows/x64/runner/Release"
+          $src = Join-Path $release "rustdesk.exe"
+          $dst = Join-Path $release "$($env:BRAND_APP_NAME).exe"
+          if (-not (Test-Path $src)) {
+              throw "expected $src after build, not found"
+          }
+          if ($src -ne $dst) {
+              Rename-Item -Path $src -NewName "$($env:BRAND_APP_NAME).exe"
+              Write-Host "renamed rustdesk.exe -> $($env:BRAND_APP_NAME).exe"
+          }
+
+      # --------------------------------------------------------------------
       # Code signing (conditional) — signs the main .exe and DLLs.
       # Activated when WINDOWS_PFX_BASE64 secret is set. Without it, the
       # binary still ships but SmartScreen will warn "Unknown publisher".
@@ -297,8 +322,14 @@ jobs:
       - name: Build MSI
         working-directory: client/upstream/res/msi
         shell: pwsh
+        env:
+          BRAND_APP_NAME: ${{ vars.BRAND_APP_NAME }}
         run: |
-          python preprocess.py --arp -d ../../flutter/build/windows/x64/runner/Release
+          # --app-name binds MSI Product name, install folder, exe name, start-menu
+          # shortcut, and UpgradeCode (uuid5 of "$app_name.exe"). Without it, every
+          # install lands in C:\Program Files\RustDesk\RustDesk.exe regardless of
+          # how the .exe was branded upstream — producing mismatched shortcuts.
+          python preprocess.py --arp --app-name "$env:BRAND_APP_NAME" -d ../../flutter/build/windows/x64/runner/Release
           if ($LASTEXITCODE -ne 0) { throw "preprocess.py failed" }
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
