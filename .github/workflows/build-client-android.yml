@@ -85,6 +85,7 @@ jobs:
           UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
           BRAND_FLEET_USER:       ${{ secrets.BRAND_FLEET_USER }}
           BRAND_FLEET_PASSWORD:   ${{ secrets.BRAND_FLEET_PASSWORD }}
+          RELEASE_TAG:            ${{ inputs.release_tag }}
         run: |
           missing=()
           for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
@@ -209,6 +210,7 @@ jobs:
           UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
           BRAND_FLEET_USER:       ${{ secrets.BRAND_FLEET_USER }}
           BRAND_FLEET_PASSWORD:   ${{ secrets.BRAND_FLEET_PASSWORD }}
+          RELEASE_TAG:            ${{ inputs.release_tag }}
         run: client/scripts/apply-branding.sh
 
       # --------------------------------------------------------------------

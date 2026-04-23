@@ -72,6 +72,13 @@ fi
 
 # Cheap sanity checks. Hard to catch every invalid input via regex alone,
 # but these rule out the most common mistakes.
+# Release tag (e.g. v0.0.25). Optional: when set, appended to the
+# Cargo.toml version as semver build-metadata so gen_version() emits
+# "1.4.6+v0.0.25" and the admin UI shows that as peer.version — useful
+# when fleet operators want to know which branded MSI revision a given
+# client is running on top of the 1.4.6 upstream base.
+RELEASE_TAG="${RELEASE_TAG:-}"
+
 [[ "$BRAND_APP_NAME"       =~ ^[A-Za-z][A-Za-z0-9]*$ ]] \
     || fail "BRAND_APP_NAME must be alphanumeric, start with a letter (got: $BRAND_APP_NAME)"
 [[ "$BRAND_ORG"            =~ ^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$ ]] \
@@ -240,6 +247,27 @@ grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCC
 # Remote Desktop", "Purslane Ltd", "rustdesk.exe", etc. — patch them
 # so the UX matches our brand from the first click.
 WIN_RUNNER_RC="$UPSTREAM/flutter/windows/runner/Runner.rc"
+# 4.3c Cargo.toml version — gen_version() in hbb_common rewrites
+# src/version.rs from the `version = "..."` line in Cargo.toml at build
+# time. Stamping our release tag as semver build-metadata
+# ("1.4.6+v0.0.25") makes hbb_common::VERSION carry it all the way to
+# the admin UI's peer.version column without breaking semver-aware
+# comparisons elsewhere in the code (build metadata is ignored by
+# ord-style checks per semver.org spec).
+if [[ -n "$RELEASE_TAG" ]]; then
+    CARGO_TOML="$UPSTREAM/Cargo.toml"
+    # Keep the upstream version, append +<tag> only if not already stamped
+    if ! grep -qE "^version *= *\"[^\"]*\\+" "$CARGO_TOML"; then
+        TAG_ESC=$(sed_escape "$RELEASE_TAG")
+        log "stamping RELEASE_TAG=$RELEASE_TAG into $CARGO_TOML"
+        sed -i.sedbak -E "0,/^version *= *\"([^\"]+)\"/s//version = \"\\1+${TAG_ESC}\"/" "$CARGO_TOML"
+        grep -qE "^version *= *\"[0-9.]+\\+${TAG_ESC}\"" "$CARGO_TOML" \
+            || fail "RELEASE_TAG stamp failed in $CARGO_TOML"
+    else
+        log "Cargo.toml version already carries a +metadata tag; skipping"
+    fi
+fi
+
 log "patching $WIN_RUNNER_RC (VERSIONINFO)"
 sed -i.sedbak -E \
     -e "s|VALUE \"CompanyName\", \"Purslane Ltd\"|VALUE \"CompanyName\", \"${ORG_ESC}\"|" \
