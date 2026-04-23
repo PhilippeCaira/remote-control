@@ -202,11 +202,41 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
         .ok_or_else(|| hbb_common::anyhow::anyhow!("no access_token in login response"))?
         .to_string();
 
-    // 4b. Upsert the peer into the admin's address book. Plaintext
-    //     password goes into the `password` field (not `hash`): the salt
-    //     used for the SHA256(pwd||salt) scheme is unknown to us here,
-    //     and ljw.js consumes `password` directly.
-    let peer = serde_json::json!({
+    // 4b. Fetch the existing AB, upsert our peer in the list, POST back.
+    //     /api/ab is a REPLACE endpoint (it overwrites the full peer
+    //     list), not an upsert — calling it with {peers:[us]} would wipe
+    //     every other fleet-registered device. Read-modify-write is
+    //     racy across simultaneous first-boots, but first-boot is rare
+    //     and retries are idempotent, so it's acceptable in practice.
+    //     Plaintext password goes into the `password` field (ljw.js
+    //     consumes it directly).
+    let ab_url = format!("{}/api/ab", FLEET_API_BASE.trim_end_matches('/'));
+    let get_resp = client.get(&ab_url).bearer_auth(&token).send()?;
+    let mut tags = serde_json::Value::Array(vec![]);
+    let mut tag_colors = serde_json::Value::String(String::from("{}"));
+    let mut peers_out: Vec<serde_json::Value> = Vec::new();
+    if get_resp.status().is_success() {
+        if let Ok(env) = get_resp.json::<serde_json::Value>() {
+            if let Some(raw) = env.get("data").and_then(|v| v.as_str()) {
+                if let Ok(inner) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(arr) = inner.get("peers").and_then(|v| v.as_array()) {
+                        peers_out = arr
+                            .iter()
+                            .filter(|p| p.get("id").and_then(|v| v.as_str()) != Some(device_id))
+                            .cloned()
+                            .collect();
+                    }
+                    if let Some(t) = inner.get("tags").cloned() {
+                        tags = t;
+                    }
+                    if let Some(tc) = inner.get("tag_colors").cloned() {
+                        tag_colors = tc;
+                    }
+                }
+            }
+        }
+    }
+    peers_out.push(serde_json::json!({
         "id": device_id,
         "username": "",
         "hostname": hostname,
@@ -215,15 +245,14 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
         "tags": [],
         "password": password,
         "hash": "",
-    });
+    }));
     let ab_data = serde_json::json!({
-        "tags": [],
-        "peers": [peer],
-        "tag_colors": "{}",
+        "tags": tags,
+        "peers": peers_out,
+        "tag_colors": tag_colors,
     })
     .to_string();
     let ab_body = serde_json::json!({ "data": ab_data });
-    let ab_url = format!("{}/api/ab", FLEET_API_BASE.trim_end_matches('/'));
     let ab_resp = client
         .post(&ab_url)
         .bearer_auth(&token)
