@@ -10,16 +10,10 @@
 # Usage:   verify-hardcoded.sh <path/to/binary>[ <more binaries>...]
 #
 # Required environment:
-#   EXPECT_RENDEZVOUS            e.g. rdv.example.com
-#   EXPECT_RELAY                 e.g. rdv.example.com:21117  (hostname only checked)
-#   EXPECT_API                   e.g. https://api.example.com
-#   EXPECT_RS_PUB_KEY            base64 ed25519 public key (tr -d '\n' before set)
-#   EXPECT_ADMIN_PW_URL          e.g. https://api.example.com/admin-pw
-#   EXPECT_ADMIN_PW_HMAC_KEY_PREFIX
-#                                first 16 chars of the base64 HMAC key
-#                                (full key is ~44 chars; a prefix check avoids
-#                                printing the full secret in CI logs if this
-#                                assertion ever fails)
+#   EXPECT_RENDEZVOUS    e.g. rdv.example.com
+#   EXPECT_RELAY         e.g. rdv.example.com:21117  (hostname only checked)
+#   EXPECT_API           e.g. https://api.example.com
+#   EXPECT_RS_PUB_KEY    base64 ed25519 public key (tr -d '\n' before set)
 #
 # Each binary is scanned with `strings`; every expected value must appear
 # at least once. Any miss fails the script.
@@ -34,13 +28,6 @@ log()  { printf '[verify-hardcoded] %s\n' "$*"; }
 : "${EXPECT_RENDEZVOUS:?set EXPECT_RENDEZVOUS}"
 : "${EXPECT_API:?set EXPECT_API}"
 : "${EXPECT_RS_PUB_KEY:?set EXPECT_RS_PUB_KEY}"
-# ADMIN_PW_URL + HMAC key prefix are optional: Android builds never call
-# admin_pw_bootstrap() (the RustDesk Android port runs as a plain user app,
-# not as a service registered with the admin-pw sidecar), so the strings
-# may legitimately be absent after LTO. Leave these env vars unset (or
-# empty) on platforms where the admin-pw flow does not apply.
-EXPECT_ADMIN_PW_URL="${EXPECT_ADMIN_PW_URL:-}"
-EXPECT_ADMIN_PW_HMAC_KEY_PREFIX="${EXPECT_ADMIN_PW_HMAC_KEY_PREFIX:-}"
 EXPECT_RELAY_HOST="${EXPECT_RELAY%%:*}"   # strip port
 
 command -v strings >/dev/null || fail "\`strings\` not found — install binutils"
@@ -54,7 +41,6 @@ command -v strings >/dev/null || fail "\`strings\` not found — install binutil
 # if that string shows up ANYWHERE, we ship a broken binary.
 
 found_rendezvous=0; found_relay=0; found_api=0; found_pubkey=0
-found_admin_pw_url=0; found_admin_pw_key=0
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
@@ -67,10 +53,6 @@ for bin in "$@"; do
     grep -qF -- "$EXPECT_RELAY_HOST"                "$tmp" && found_relay=1
     grep -qF -- "$EXPECT_API"                       "$tmp" && found_api=1
     grep -qF -- "$EXPECT_RS_PUB_KEY"                "$tmp" && found_pubkey=1
-    [[ -n "$EXPECT_ADMIN_PW_URL" ]] \
-        && grep -qF -- "$EXPECT_ADMIN_PW_URL"       "$tmp" && found_admin_pw_url=1
-    [[ -n "$EXPECT_ADMIN_PW_HMAC_KEY_PREFIX" ]] \
-        && grep -qF -- "$EXPECT_ADMIN_PW_HMAC_KEY_PREFIX" "$tmp" && found_admin_pw_key=1
 
     # Anti-regression: upstream RustDesk default pubkey must NOT appear
     # anywhere, otherwise the binary is still targeting public infra.
@@ -80,16 +62,10 @@ for bin in "$@"; do
 done
 
 missing=()
-(( found_rendezvous ))    || missing+=("RENDEZVOUS:$EXPECT_RENDEZVOUS")
-(( found_relay ))         || missing+=("RELAY:$EXPECT_RELAY_HOST")
-(( found_api ))           || missing+=("API:$EXPECT_API")
-(( found_pubkey ))        || missing+=("RS_PUB_KEY")
-# admin-pw values only checked when the caller requested them (see early
-# "optional" handling above).
-[[ -z "$EXPECT_ADMIN_PW_URL" ]] || (( found_admin_pw_url )) \
-    || missing+=("ADMIN_PW_URL:$EXPECT_ADMIN_PW_URL")
-[[ -z "$EXPECT_ADMIN_PW_HMAC_KEY_PREFIX" ]] || (( found_admin_pw_key )) \
-    || missing+=("ADMIN_PW_HMAC_KEY (prefix)")
+(( found_rendezvous )) || missing+=("RENDEZVOUS:$EXPECT_RENDEZVOUS")
+(( found_relay ))      || missing+=("RELAY:$EXPECT_RELAY_HOST")
+(( found_api ))        || missing+=("API:$EXPECT_API")
+(( found_pubkey ))     || missing+=("RS_PUB_KEY")
 if (( ${#missing[@]} > 0 )); then
     fail "missing across all scanned binaries: ${missing[*]}"
 fi

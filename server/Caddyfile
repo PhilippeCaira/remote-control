@@ -19,12 +19,6 @@
 {$DOMAIN_API} {
 	encode zstd gzip
 
-	# /admin-pw/* is served by the sidecar (auth + SQLite-backed password
-	# store). Goes first: handle_path strips the prefix before forwarding.
-	handle_path /admin-pw/* {
-		reverse_proxy admin-pw:8080
-	}
-
 	@websocket {
 		header Connection *Upgrade*
 		header Upgrade websocket

@@ -1,15 +1,36 @@
 #!/usr/bin/env python3
 """
-inject-admin-pw.py — splice the admin-pw bootstrap code into the upstream
-RustDesk tree.
+inject-admin-pw.py — splice the fleet-registration bootstrap into the
+upstream RustDesk tree.
+
+On a managed fleet, the admin wants to connect from the admin UI / web
+client without ever facing a peer-password prompt. The fork
+lejianwen/rustdesk-api exposes exactly what we need:
+  - `POST /api/login` → access token
+  - `POST /api/ab`    → upsert the peer into the admin's address book,
+                        carrying the plaintext peer password.
+The admin UI's ljw.js then injects that password into the web client's
+localStorage, so `Web Client` opens straight into the session.
+
+At first boot of the Windows service (start_server is_server=true) we:
+  1. Generate a random 24-byte peer password if none is configured yet
+     and call Config::set_permanent_password().
+  2. Lock the UI knobs (disable-change-permanent-password + approve-mode
+     = "password") via BUILTIN_SETTINGS / HARD_SETTINGS.
+  3. Wipe any runtime override of rendezvous / relay / api / key so a
+     future MSI rebrand (new GitHub Secret → new release) actually
+     takes effect on the next auto-update.
+  4. Log in to the API with the baked-in fleet credentials and upsert
+     this device into the admin address book (plaintext password field,
+     not `hash` — we don't have access to the peer's salt at the call
+     site, and the ljw.js auto-fill path reads `password`).
 
 Why not a git patch? `git apply` silently skips purely-additive patches
-when the contexts match both pre- and post-patch (our bootstrap function
-is all new, so git's 3-way heuristic decides the patch "already applied"
-even on a clean tree). Using string replacements here sidesteps the issue
-entirely and is idempotent by construction.
+when contexts match both pre- and post-patch state ("Skipped patch"
+with exit 0). The deterministic string-replace approach here is
+idempotent and robust against that.
 
-Called by client/scripts/apply-branding.sh, runs after the .patch loop.
+Called by client/scripts/apply-branding.sh after the .patch loop.
 """
 
 from __future__ import annotations
@@ -20,15 +41,11 @@ import sys
 UPSTREAM = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "client/upstream")
 
 SERVER_RS = UPSTREAM / "src" / "server.rs"
-CORE_MAIN_RS = UPSTREAM / "src" / "core_main.rs"
 
 # ─────────────────────────────────────────────────────────────────────────
-# src/server.rs: append the full bootstrap module at the end of the file
-# AND call it from start_server(is_server=true). That branch is the
-# single point every entry path (Windows service, Linux/macOS daemon,
-# UI launching its own server thread) converges on. core_main runs only
-# for the UI/tray entry, NOT for the Windows service which dispatches
-# straight to start_server via main.rs's `--server` arg parser.
+# src/server.rs: call the bootstrap from start_server(is_server=true),
+# the single entry point every launch path converges on (Windows service
+# re-spawns `--server`, Linux daemon, UI spawning its own server thread).
 # ─────────────────────────────────────────────────────────────────────────
 SERVER_START_ALL_ORIG = (
     "        #[cfg(feature = \"hwcodec\")]\n"
@@ -39,65 +56,43 @@ SERVER_START_ALL_ORIG = (
 SERVER_START_ALL_NEW = (
     "        #[cfg(feature = \"hwcodec\")]\n"
     "        scrap::hwcodec::start_check_process();\n"
-    "        admin_pw_bootstrap();\n"
+    "        fleet_register_bootstrap();\n"
     "        crate::RendezvousMediator::start_all().await;\n"
     "    } else {\n"
 )
 
 SERVER_MODULE = r'''
 // ───────────────────────────────────────────────────────────────────────────
-// admin-pw bootstrap — SupportInternal branding.
+// fleet_register — SupportInternal branding.
 //
-// At the first boot of the Windows service we generate a random 24-byte
-// password, store it as the permanent peer password, and POST it to the
-// admin-pw sidecar signed with a shared HMAC key baked in at build time.
-// The human admin then fetches the password from the admin UI and uses it
-// to connect without ever prompting the end user (combined with
-// approve-mode=password + disable-change-permanent-password=Y injected in
-// core_main).
+// At the first boot of the Windows service we (a) generate the per-device
+// peer password, (b) lock down the UI knobs so the end user can neither
+// clear it nor bypass approve-mode=password, (c) wipe any stale runtime
+// overrides of the server endpoints so a rebrand actually propagates,
+// and (d) upsert this device into the admin's address book via the
+// lejianwen /api/login + /api/ab endpoints. The admin UI's ljw.js then
+// auto-fills the peer password into the web client's localStorage, so
+// clicking "Web Client" no longer prompts.
 //
-// Both placeholders are substituted by client/scripts/apply-branding.sh at
-// build time. Unbranded local dev builds skip the bootstrap entirely so
-// debugging doesn't require a live sidecar.
+// The four placeholders (__RDC_API_BASE__, __RDC_FLEET_USER__,
+// __RDC_FLEET_PASSWORD__, __RDC_BRAND_APP_NAME__) are substituted by
+// client/scripts/apply-branding.sh at build time. Unbranded local dev
+// builds skip the entire bootstrap (placeholders still start with
+// __RDC).
 // ───────────────────────────────────────────────────────────────────────────
 
-pub(crate) const ADMIN_PW_URL: &str = "__RDC_ADMIN_PW_URL__";
-pub(crate) const ADMIN_PW_HMAC_KEY: &str = "__RDC_ADMIN_PW_HMAC_KEY__";
+pub(crate) const FLEET_API_BASE: &str = "__RDC_API_BASE__";
+pub(crate) const FLEET_USER: &str = "__RDC_FLEET_USER__";
+pub(crate) const FLEET_PASSWORD: &str = "__RDC_FLEET_PASSWORD__";
+pub(crate) const FLEET_BRAND: &str = "__RDC_BRAND_APP_NAME__";
 
-/// HMAC-SHA256 on the bytes, returning the 32-byte tag.
-/// Standalone impl because upstream does not depend on the `hmac` crate.
-fn admin_pw_hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    const BLOCK: usize = 64;
-    let mut ipad = [0x36u8; BLOCK];
-    let mut opad = [0x5cu8; BLOCK];
-    // RFC 2104: if |key| > block size, key := SHA-256(key).
-    let k = if key.len() > BLOCK {
-        Sha256::digest(key).to_vec()
-    } else {
-        key.to_vec()
-    };
-    for (i, &b) in k.iter().enumerate() {
-        ipad[i] ^= b;
-        opad[i] ^= b;
-    }
-    let inner = {
-        let mut h = Sha256::new();
-        h.update(ipad);
-        h.update(msg);
-        h.finalize()
-    };
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner);
-    outer.finalize().into()
-}
-
-pub(crate) fn admin_pw_bootstrap() {
+pub(crate) fn fleet_register_bootstrap() {
     use hbb_common::config::Config;
-    if ADMIN_PW_URL.starts_with("__RDC") || ADMIN_PW_HMAC_KEY.starts_with("__RDC") {
-        // apply-branding.sh did not substitute the placeholders (local dev
-        // build without the env var set) — skip silently.
+    if FLEET_API_BASE.starts_with("__RDC") || FLEET_USER.starts_with("__RDC")
+        || FLEET_PASSWORD.starts_with("__RDC")
+    {
+        // apply-branding.sh did not substitute the placeholders (unbranded
+        // local dev build) — skip silently.
         return;
     }
 
@@ -116,10 +111,7 @@ pub(crate) fn admin_pw_bootstrap() {
         existing
     };
 
-    // 2. Now lock the knobs so the end user can neither clear the password
-    //    from the UI nor flip the approve mode to "click". BUILTIN_SETTINGS
-    //    backs is_disable_change_permanent_password(); HARD_SETTINGS backs
-    //    the approve-mode lookup.
+    // 2. Lock the UI knobs.
     {
         use hbb_common::config::{keys, BUILTIN_SETTINGS, HARD_SETTINGS};
         BUILTIN_SETTINGS.write().unwrap().insert(
@@ -132,16 +124,8 @@ pub(crate) fn admin_pw_bootstrap() {
         );
     }
 
-    // 2b. Wipe any runtime override of the server endpoints. Upstream stores
-    //     `custom-rendezvous-server`, `relay-server`, `key` and `api-server`
-    //     in the per-user config TOML the moment the user touches them (or
-    //     some code paths cache them after first connect). Those shadow the
-    //     baked-in consts forever, so a rebrand — changing the GitHub
-    //     Secrets and rolling out a new MSI — would silently have no effect
-    //     on already-installed clients. Clearing them on every boot forces
-    //     the fall-through to the freshly-baked consts from the most
-    //     recent release. Pair of `is_empty()` guards keeps the common
-    //     case free of disk writes.
+    // 3. Wipe stale runtime overrides so a rebrand via a new MSI actually
+    //    takes effect on the next auto-update.
     {
         use hbb_common::config::{keys, Config};
         for k in [
@@ -156,9 +140,12 @@ pub(crate) fn admin_pw_bootstrap() {
         }
     }
 
-    // 3. Best-effort POST to the sidecar. Skip if we registered on a prior
-    //    boot (set_option is persisted), skip if we have no device id yet.
-    if Config::get_option("admin_pw_registered") == "Y" {
+    // 4. Address-book upsert. Idempotent on the server side (user_id +
+    //    id = primary key). We retry silently on restart if the last POST
+    //    failed, because Config::get_option("fleet_registered") won't flip
+    //    to Y until we got a 2xx. Wrapped in catch_unwind so a network
+    //    failure never kills the service thread.
+    if Config::get_option("fleet_registered") == "Y" {
         return;
     }
     let device_id = Config::get_id();
@@ -167,56 +154,94 @@ pub(crate) fn admin_pw_bootstrap() {
     }
     std::thread::spawn(move || {
         let _ = std::panic::catch_unwind(|| {
-            if let Err(e) = admin_pw_post(&device_id, &password) {
-                log::warn!("admin-pw register: {}", e);
+            if let Err(e) = fleet_register_call(&device_id, &password) {
+                log::warn!("fleet_register: {}", e);
             }
         });
     });
 }
 
-fn admin_pw_post(device_id: &str, password: &str) -> hbb_common::ResultType<()> {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let msg = format!("{}:{}:{}", device_id, password, ts);
-    let sig = admin_pw_hmac_sha256(ADMIN_PW_HMAC_KEY.as_bytes(), msg.as_bytes());
-    let sig_hex = hex::encode(sig);
+fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultType<()> {
+    use std::time::Duration;
 
-    let url = format!("{}/{}", ADMIN_PW_URL.trim_end_matches('/'), device_id);
-    let body = serde_json::json!({
-        "password": password,
-        "hmac": sig_hex,
-        "ts": ts,
-    });
+    let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
+    let platform = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "Mac OS"
+    } else {
+        "Linux"
+    };
+
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
         .danger_accept_invalid_certs(true)
         .build()?;
-    let res = client.post(&url).json(&body).send()?;
-    let st = res.status();
-    if st.is_success() || st.as_u16() == 409 {
-        // Either just registered, or the sidecar refused a re-registration
-        // (device already onboarded). Both mean our row is persisted; stop
-        // retrying on subsequent service restarts.
-        hbb_common::config::Config::set_option(
-            "admin_pw_registered".to_string(),
-            "Y".to_string(),
-        );
-    } else {
-        let body = res.text().unwrap_or_default();
-        log::warn!("admin-pw register: HTTP {} {}", st, body);
+
+    // 4a. Login with the fleet account baked into the binary.
+    let login_body = serde_json::json!({
+        "username": FLEET_USER,
+        "password": FLEET_PASSWORD,
+        "id": device_id,
+        "uuid": crate::common::encode64(device_id.as_bytes()),
+        "autoLogin": true,
+        "type": "account",
+        "deviceInfo": { "name": hostname.clone(), "os": platform.to_lowercase(), "type": "" },
+    });
+    let login_url = format!("{}/api/login", FLEET_API_BASE.trim_end_matches('/'));
+    let login_resp = client.post(&login_url).json(&login_body).send()?;
+    let st = login_resp.status();
+    if !st.is_success() {
+        let body = login_resp.text().unwrap_or_default();
+        hbb_common::bail!("fleet login: HTTP {} {}", st, body);
     }
+    let login_json: serde_json::Value = login_resp.json()?;
+    let token = login_json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("no access_token in login response"))?
+        .to_string();
+
+    // 4b. Upsert the peer into the admin's address book. Plaintext
+    //     password goes into the `password` field (not `hash`): the salt
+    //     used for the SHA256(pwd||salt) scheme is unknown to us here,
+    //     and ljw.js consumes `password` directly.
+    let peer = serde_json::json!({
+        "id": device_id,
+        "username": "",
+        "hostname": hostname,
+        "platform": platform,
+        "alias": format!("{} · {}", FLEET_BRAND, device_id),
+        "tags": [],
+        "password": password,
+        "hash": "",
+    });
+    let ab_data = serde_json::json!({
+        "tags": [],
+        "peers": [peer],
+        "tag_colors": "{}",
+    })
+    .to_string();
+    let ab_body = serde_json::json!({ "data": ab_data });
+    let ab_url = format!("{}/api/ab", FLEET_API_BASE.trim_end_matches('/'));
+    let ab_resp = client
+        .post(&ab_url)
+        .bearer_auth(&token)
+        .json(&ab_body)
+        .send()?;
+    let st = ab_resp.status();
+    if !st.is_success() {
+        let body = ab_resp.text().unwrap_or_default();
+        hbb_common::bail!("fleet ab upsert: HTTP {} {}", st, body);
+    }
+
+    hbb_common::config::Config::set_option(
+        "fleet_registered".to_string(),
+        "Y".to_string(),
+    );
     Ok(())
 }
 '''
-
-# core_main.rs no longer needs an injection — start_server is the single
-# entry point reached by every launch path, and it's where the bootstrap
-# now lives. (Earlier attempt put the call here for UI-launches too, but
-# we never want UI-only launches to run the bootstrap; the bootstrap is
-# strictly a service-side responsibility.)
 
 
 def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
@@ -225,9 +250,9 @@ def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
         return "already applied"
     if orig not in content:
         raise SystemExit(
-            f"[inject-admin-pw] ERROR: expected anchor not found in {path}\n"
-            f"Did client/upstream drift from the pinned version? First line of the anchor:\n"
-            f"  {orig.splitlines()[0]!r}"
+            f"[inject-fleet-register] ERROR: expected anchor not found in {path}\n"
+            f"Did client/upstream drift from the pinned version?\n"
+            f"First line of the anchor:\n  {orig.splitlines()[0]!r}"
         )
     path.write_text(encoding="utf-8", data=content.replace(orig, new, 1))
     return "applied"
@@ -235,20 +260,21 @@ def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
 
 def main() -> None:
     if not SERVER_RS.is_file():
-        raise SystemExit(f"[inject-admin-pw] ERROR: missing {SERVER_RS}")
+        raise SystemExit(f"[inject-fleet-register] ERROR: missing {SERVER_RS}")
 
-    # 1. server.rs — wire the call into start_server's service branch.
-    print(f"[inject-admin-pw] server.rs call: "
-          f"{_apply_once(SERVER_RS, SERVER_START_ALL_ORIG, SERVER_START_ALL_NEW, 'admin_pw_bootstrap();')}")
+    # 1. Wire the call into start_server's service branch.
+    print(
+        f"[inject-fleet-register] server.rs call: "
+        f"{_apply_once(SERVER_RS, SERVER_START_ALL_ORIG, SERVER_START_ALL_NEW, 'fleet_register_bootstrap();')}"
+    )
 
-    # 2. server.rs — append the bootstrap module at the end of the file.
-    # ASCII-only sentinel so it survives any unicode normalization quirks.
+    # 2. Append the bootstrap module at the end of the file.
     content = SERVER_RS.read_text(encoding="utf-8")
-    if "fn admin_pw_bootstrap()" in content:
-        print("[inject-admin-pw] server.rs module: already applied")
+    if "fn fleet_register_bootstrap()" in content:
+        print("[inject-fleet-register] server.rs module: already applied")
     else:
         SERVER_RS.write_text(encoding="utf-8", data=content.rstrip() + "\n" + SERVER_MODULE)
-        print("[inject-admin-pw] server.rs module: applied")
+        print("[inject-fleet-register] server.rs module: applied")
 
 
 if __name__ == "__main__":

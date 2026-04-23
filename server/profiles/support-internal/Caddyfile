@@ -51,11 +51,6 @@
 
 	encode zstd gzip
 
-	# admin-pw sidecar (client register / admin fetch / admin revoke)
-	handle_path /admin-pw/* {
-		reverse_proxy admin-pw:8080
-	}
-
 	@websocket {
 		header Connection *Upgrade*
 		header Upgrade websocket

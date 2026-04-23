@@ -65,13 +65,14 @@ jobs:
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
           UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
-          BRAND_ADMIN_PW_HMAC_KEY: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
+          BRAND_FLEET_USER:       ${{ secrets.BRAND_FLEET_USER }}
+          BRAND_FLEET_PASSWORD:   ${{ secrets.BRAND_FLEET_PASSWORD }}
         run: |
           missing=()
           for v in RENDEZVOUS_SERVER RS_PUB_KEY API_SERVER \
                    BRAND_APP_NAME BRAND_ORG BRAND_ANDROID_APP_ID \
                    BRAND_MACOS_BUNDLE_ID BRAND_COPYRIGHT \
-                   UPDATE_CHECK_URL BRAND_ADMIN_PW_HMAC_KEY; do
+                   UPDATE_CHECK_URL BRAND_FLEET_USER BRAND_FLEET_PASSWORD; do
               [[ -n "${!v}" ]] || missing+=("$v")
           done
           if (( ${#missing[@]} )); then
@@ -179,7 +180,8 @@ jobs:
           BRAND_MACOS_BUNDLE_ID: ${{ vars.BRAND_MACOS_BUNDLE_ID }}
           BRAND_COPYRIGHT:       ${{ vars.BRAND_COPYRIGHT }}
           UPDATE_CHECK_URL:      ${{ vars.UPDATE_CHECK_URL }}
-          BRAND_ADMIN_PW_HMAC_KEY: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
+          BRAND_FLEET_USER:       ${{ secrets.BRAND_FLEET_USER }}
+          BRAND_FLEET_PASSWORD:   ${{ secrets.BRAND_FLEET_PASSWORD }}
         run: client/scripts/apply-branding.sh
 
       # --------------------------------------------------------------------
@@ -218,8 +220,6 @@ jobs:
           EXPECT_RELAY:      ${{ secrets.RENDEZVOUS_SERVER }}:21117
           EXPECT_API:        ${{ secrets.API_SERVER }}
           EXPECT_RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
-          EXPECT_ADMIN_PW_URL:        ${{ secrets.API_SERVER }}/admin-pw
-          BRAND_ADMIN_PW_HMAC_KEY_FULL: ${{ secrets.BRAND_ADMIN_PW_HMAC_KEY }}
         run: |
           # Locate the Flutter-built binary. Upstream produces
           # flutter/build/linux/x64/release/bundle/<product>
@@ -240,7 +240,6 @@ jobs:
               echo "::error::no librustdesk.so found under $bundle_dir/lib"
               exit 1
           fi
-          export EXPECT_ADMIN_PW_HMAC_KEY_PREFIX="${BRAND_ADMIN_PW_HMAC_KEY_FULL:0:16}"
           client/scripts/verify-hardcoded.sh "${targets[@]}"
 
       # --------------------------------------------------------------------

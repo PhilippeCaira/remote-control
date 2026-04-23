@@ -22,6 +22,8 @@ services:
       DOMAIN_RDV: ${DOMAIN_RDV}
       GITHUB_REPO_SLUG: ${GITHUB_REPO_SLUG}
       BRAND_APP_NAME: ${BRAND_APP_NAME}
+    depends_on:
+      - rustdesk
     volumes:
       - ./profiles/support-internal/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./volumes/caddy/data:/data

@@ -67,7 +67,8 @@ fi
 : "${BRAND_MACOS_BUNDLE_ID:?set BRAND_MACOS_BUNDLE_ID (e.g. com.example.remotecontrol)}"
 : "${BRAND_COPYRIGHT:?set BRAND_COPYRIGHT (e.g. \"Copyright (c) 2026 Example SA\")}"
 : "${UPDATE_CHECK_URL:?set UPDATE_CHECK_URL (e.g. https://owner.github.io/repo/version/latest.json)}"
-: "${BRAND_ADMIN_PW_HMAC_KEY:?set BRAND_ADMIN_PW_HMAC_KEY (base64 >=32 bytes, openssl rand -base64 32)}"
+: "${BRAND_FLEET_USER:?set BRAND_FLEET_USER (admin UI login baked into the client)}"
+: "${BRAND_FLEET_PASSWORD:?set BRAND_FLEET_PASSWORD (admin UI password baked into the client)}"
 
 # Cheap sanity checks. Hard to catch every invalid input via regex alone,
 # but these rule out the most common mistakes.
@@ -85,12 +86,10 @@ if [[ "$RS_PUB_KEY" == "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=" ]]; then
     fail "RS_PUB_KEY equals the upstream RustDesk default — refusing to build"
 fi
 
-# The admin-pw HMAC key must be at least 32 bytes of entropy once
-# base64-decoded. Length check on the b64 string is a cheap proxy
-# (base64(32 bytes) = 44 chars incl. padding).
-if (( ${#BRAND_ADMIN_PW_HMAC_KEY} < 43 )); then
-    fail "BRAND_ADMIN_PW_HMAC_KEY too short — generate with 'openssl rand -base64 32'"
-fi
+[[ -n "$BRAND_FLEET_USER" && ${#BRAND_FLEET_USER} -ge 2 ]] \
+    || fail "BRAND_FLEET_USER too short (lejianwen enforces min 2 chars)"
+[[ -n "$BRAND_FLEET_PASSWORD" && ${#BRAND_FLEET_PASSWORD} -ge 4 ]] \
+    || fail "BRAND_FLEET_PASSWORD too short (lejianwen enforces min 4 chars)"
 
 # ---------------------------------------------------------------------------
 # 2. Apply static patches in lexical order
@@ -260,26 +259,34 @@ sed -i.sedbak -E \
 grep -qF "${BRAND_APP_NAME}-{}-x86_64" "$UPDATER_RS" \
     || fail "MSI filename-pattern substitution failed in $UPDATER_RS"
 
-# 4.5 admin-pw bootstrap placeholders.
+# 4.5 fleet-register bootstrap placeholders.
 #
-# client/patches/0002-admin-pw-bootstrap.patch drops two sentinel consts
-# into src/server.rs; we fill them here with the real URL and HMAC key so
-# the baked binary knows who to POST to at first boot. If either is still
-# at its __RDC__ default, admin_pw_bootstrap() exits early (local dev).
+# inject-admin-pw.py (name kept for git history continuity) drops four
+# sentinel consts into src/server.rs. We fill them here with the real
+# API URL + fleet user/password + brand so the baked binary can log in
+# and upsert the peer into the admin's address book at first boot. If
+# any placeholder is still at its __RDC__ default, the bootstrap exits
+# early (local dev).
 SERVER_RS="$UPSTREAM/src/server.rs"
-ADMIN_PW_URL="${API_SERVER%/}/admin-pw"
-ADMIN_PW_URL_ESC=$(sed_escape "$ADMIN_PW_URL")
-ADMIN_PW_HMAC_KEY_ESC=$(sed_escape "$BRAND_ADMIN_PW_HMAC_KEY")
+FLEET_API_BASE="${API_SERVER%/}"
+FLEET_API_BASE_ESC=$(sed_escape "$FLEET_API_BASE")
+FLEET_USER_ESC=$(sed_escape "$BRAND_FLEET_USER")
+FLEET_PASSWORD_ESC=$(sed_escape "$BRAND_FLEET_PASSWORD")
+BRAND_APP_NAME_ESC_RE=$(sed_escape "$BRAND_APP_NAME")
 
-log "patching admin-pw sentinels in $SERVER_RS"
+log "patching fleet-register sentinels in $SERVER_RS"
 sed -i.sedbak -E \
-    -e "s|\"__RDC_ADMIN_PW_URL__\"|\"${ADMIN_PW_URL_ESC}\"|" \
-    -e "s|\"__RDC_ADMIN_PW_HMAC_KEY__\"|\"${ADMIN_PW_HMAC_KEY_ESC}\"|" \
+    -e "s|\"__RDC_API_BASE__\"|\"${FLEET_API_BASE_ESC}\"|" \
+    -e "s|\"__RDC_FLEET_USER__\"|\"${FLEET_USER_ESC}\"|" \
+    -e "s|\"__RDC_FLEET_PASSWORD__\"|\"${FLEET_PASSWORD_ESC}\"|" \
+    -e "s|\"__RDC_BRAND_APP_NAME__\"|\"${BRAND_APP_NAME_ESC_RE}\"|" \
     "$SERVER_RS"
-grep -qF "\"${ADMIN_PW_URL}\"" "$SERVER_RS" \
-    || fail "ADMIN_PW_URL substitution failed in $SERVER_RS"
-grep -qF "\"${BRAND_ADMIN_PW_HMAC_KEY}\"" "$SERVER_RS" \
-    || fail "ADMIN_PW_HMAC_KEY substitution failed in $SERVER_RS"
+grep -qF "\"${FLEET_API_BASE}\"" "$SERVER_RS" \
+    || fail "FLEET_API_BASE substitution failed in $SERVER_RS"
+grep -qF "\"${BRAND_FLEET_USER}\"" "$SERVER_RS" \
+    || fail "FLEET_USER substitution failed in $SERVER_RS"
+grep -qF "\"${BRAND_FLEET_PASSWORD}\"" "$SERVER_RS" \
+    || fail "FLEET_PASSWORD substitution failed in $SERVER_RS"
 
 # 4.6 Anchor the four hardcoded values in a `#[used] static` so LTO cannot
 # eliminate them. macOS x86_64 aggressive DCE otherwise strips the API
@@ -293,16 +300,17 @@ if ! grep -q "_RDC_BUILD_INFO_ANCHOR" "$CONFIG_RS"; then
     cat >> "$CONFIG_RS" <<EOF
 
 // ── Branded build anchor (added by client/scripts/apply-branding.sh) ─────
-// Keeps the six hardcoded endpoints resident through LTO so post-build
+// Keeps the four hardcoded endpoints resident through LTO so post-build
 // verification (client/scripts/verify-hardcoded.sh) can locate them.
+// The fleet user/password are NOT in the anchor on purpose — they live
+// in src/server.rs, which is referenced by start_server, so LTO has no
+// reason to strip them.
 #[used]
-static _RDC_BUILD_INFO_ANCHOR: [&str; 6] = [
+static _RDC_BUILD_INFO_ANCHOR: [&str; 4] = [
     r"${RENDEZVOUS_SERVER}",
     r"${RS_PUB_KEY}",
     r"${API_SERVER}",
     r"${BRAND_APP_NAME}",
-    r"${ADMIN_PW_URL}",
-    r"${BRAND_ADMIN_PW_HMAC_KEY}",
 ];
 EOF
     log "appended _RDC_BUILD_INFO_ANCHOR to $CONFIG_RS"

@@ -22,7 +22,8 @@ missing. The full list with explanations is in
 | `BRAND_MACOS_BUNDLE_ID` | GitHub Variable                          | `com.example.remotecontrol`           |
 | `BRAND_COPYRIGHT`       | GitHub Variable                          | `Copyright (c) 2026 Example SA`       |
 | `UPDATE_CHECK_URL`      | GitHub Variable                          | `https://<owner>.github.io/<repo>/version/latest.json` |
-| `BRAND_ADMIN_PW_HMAC_KEY` | GitHub Secret                          | output of `openssl rand -base64 32`    |
+| `BRAND_FLEET_USER`      | GitHub Secret                            | `admin`                               |
+| `BRAND_FLEET_PASSWORD`  | GitHub Secret                            | value from rustdesk container logs    |
 
 > **Secrets vs. Variables.** Only the three server endpoints are
 > secrets: leaking them does not give attacker access but needlessly
@@ -49,7 +50,8 @@ REPO=<your-org>/remote-control
 gh secret set RENDEZVOUS_SERVER       --repo "$REPO" --body "$RENDEZVOUS_SERVER"
 gh secret set RS_PUB_KEY              --repo "$REPO" --body "$RS_PUB_KEY"
 gh secret set API_SERVER              --repo "$REPO" --body "$API_SERVER"
-gh secret set BRAND_ADMIN_PW_HMAC_KEY --repo "$REPO" --body "$BRAND_ADMIN_PW_HMAC_KEY"
+gh secret set BRAND_FLEET_USER        --repo "$REPO" --body "$BRAND_FLEET_USER"
+gh secret set BRAND_FLEET_PASSWORD    --repo "$REPO" --body "$BRAND_FLEET_PASSWORD"
 
 # Variables (visible in logs — fine for branding)
 gh variable set BRAND_APP_NAME        --repo "$REPO" --body "$BRAND_APP_NAME"
