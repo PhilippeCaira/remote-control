@@ -226,6 +226,29 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
         format!("{} {} · {}", FLEET_BRAND, FLEET_VERSION, device_id)
     };
 
+    // lejianwen's POST /api/ab unmarshals peers into an Address-Book struct
+    // where `created_at`/`updated_at` are a custom_types.AutoTime (int64
+    // unix seconds), but GET /api/ab returns them as formatted strings. If
+    // we blindly re-POST what we got from GET, the server bails with
+    // `cannot unmarshal string into Go struct field … of type
+    // custom_types.AutoTime` (HTTP 400). Project peers down to the fields
+    // the POST endpoint actually validates.
+    fn normalize_peer(p: &serde_json::Value) -> serde_json::Value {
+        let mut out = serde_json::Map::new();
+        for k in ["id", "username", "hostname", "platform", "alias", "password", "hash"] {
+            if let Some(v) = p.get(k) {
+                out.insert(k.to_string(), v.clone());
+            } else {
+                out.insert(k.to_string(), serde_json::Value::String(String::new()));
+            }
+        }
+        out.insert(
+            "tags".to_string(),
+            p.get("tags").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![])),
+        );
+        serde_json::Value::Object(out)
+    }
+
     let ab_url = format!("{}/api/ab", FLEET_API_BASE.trim_end_matches('/'));
     let get_resp = client.get(&ab_url).bearer_auth(&token).send()?;
     let mut tags = serde_json::Value::Array(vec![]);
@@ -241,7 +264,7 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
                             if p.get("id").and_then(|v| v.as_str()) == Some(device_id) {
                                 existing_self = Some(p.clone());
                             } else {
-                                peers_other.push(p.clone());
+                                peers_other.push(normalize_peer(p));
                             }
                         }
                     }
