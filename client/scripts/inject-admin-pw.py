@@ -23,12 +23,26 @@ SERVER_RS = UPSTREAM / "src" / "server.rs"
 CORE_MAIN_RS = UPSTREAM / "src" / "core_main.rs"
 
 # ─────────────────────────────────────────────────────────────────────────
-# src/server.rs: append the full bootstrap module at the end of the file.
-# The module is called from core_main — not from start_server — so that
-# UI-only launches (tray icon) also apply the lockdown; the POST half is
-# gated on a `Config::get_option("admin_pw_registered")` flag so that
-# repeated launches do not spam the sidecar.
+# src/server.rs: append the full bootstrap module at the end of the file
+# AND call it from start_server(is_server=true). That branch is the
+# single point every entry path (Windows service, Linux/macOS daemon,
+# UI launching its own server thread) converges on. core_main runs only
+# for the UI/tray entry, NOT for the Windows service which dispatches
+# straight to start_server via main.rs's `--server` arg parser.
 # ─────────────────────────────────────────────────────────────────────────
+SERVER_START_ALL_ORIG = (
+    "        #[cfg(feature = \"hwcodec\")]\n"
+    "        scrap::hwcodec::start_check_process();\n"
+    "        crate::RendezvousMediator::start_all().await;\n"
+    "    } else {\n"
+)
+SERVER_START_ALL_NEW = (
+    "        #[cfg(feature = \"hwcodec\")]\n"
+    "        scrap::hwcodec::start_check_process();\n"
+    "        admin_pw_bootstrap();\n"
+    "        crate::RendezvousMediator::start_all().await;\n"
+    "    } else {\n"
+)
 
 SERVER_MODULE = r'''
 // ───────────────────────────────────────────────────────────────────────────
@@ -198,27 +212,11 @@ fn admin_pw_post(device_id: &str, password: &str) -> hbb_common::ResultType<()> 
 }
 '''
 
-# ─────────────────────────────────────────────────────────────────────────
-# src/core_main.rs: kick off the admin-pw bootstrap as early as possible,
-# right after load_custom_client() where our branding env is loaded. The
-# function is idempotent across repeated launches (UI + service).
-# Only desktop OSes — Android/iOS core_main.rs isn't compiled for our
-# Windows/Linux/macOS service model.
-# ─────────────────────────────────────────────────────────────────────────
-CORE_MAIN_LOAD_CUSTOM_ORIG = (
-    "    crate::load_custom_client();\n"
-    "    #[cfg(windows)]\n"
-)
-CORE_MAIN_LOAD_CUSTOM_NEW = (
-    "    crate::load_custom_client();\n"
-    "    // SupportInternal: generate the per-device peer password if missing,\n"
-    "    // lock the UI knobs that could let the end user clear or weaken it,\n"
-    "    // and POST it to the admin-pw sidecar. See src/server.rs for the\n"
-    "    // implementation. Idempotent — safe to run on every launch.\n"
-    "    #[cfg(not(any(target_os = \"android\", target_os = \"ios\")))]\n"
-    "    crate::server::admin_pw_bootstrap();\n"
-    "    #[cfg(windows)]\n"
-)
+# core_main.rs no longer needs an injection — start_server is the single
+# entry point reached by every launch path, and it's where the bootstrap
+# now lives. (Earlier attempt put the call here for UI-launches too, but
+# we never want UI-only launches to run the bootstrap; the bootstrap is
+# strictly a service-side responsibility.)
 
 
 def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
@@ -236,13 +234,12 @@ def _apply_once(path: pathlib.Path, orig: str, new: str, sentinel: str) -> str:
 
 
 def main() -> None:
-    for path in (SERVER_RS, CORE_MAIN_RS):
-        if not path.is_file():
-            raise SystemExit(f"[inject-admin-pw] ERROR: missing {path}")
+    if not SERVER_RS.is_file():
+        raise SystemExit(f"[inject-admin-pw] ERROR: missing {SERVER_RS}")
 
-    # 1. core_main.rs — call the bootstrap right after load_custom_client().
-    print(f"[inject-admin-pw] core_main.rs: "
-          f"{_apply_once(CORE_MAIN_RS, CORE_MAIN_LOAD_CUSTOM_ORIG, CORE_MAIN_LOAD_CUSTOM_NEW, 'crate::server::admin_pw_bootstrap();')}")
+    # 1. server.rs — wire the call into start_server's service branch.
+    print(f"[inject-admin-pw] server.rs call: "
+          f"{_apply_once(SERVER_RS, SERVER_START_ALL_ORIG, SERVER_START_ALL_NEW, 'admin_pw_bootstrap();')}")
 
     # 2. server.rs — append the bootstrap module at the end of the file.
     # ASCII-only sentinel so it survives any unicode normalization quirks.
