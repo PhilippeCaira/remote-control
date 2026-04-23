@@ -10,7 +10,10 @@ services:
   # Exposes hbbs/hbbr ports directly on the host (NAT traversal requires it);
   # the HTTP API (21114) is reached only through Caddy.
   rustdesk:
-    image: lejianwen/rustdesk-server-s6:latest
+    # Thin layer over lejianwen/rustdesk-server-s6 that swaps the admin
+    # UI for our fork (adds plaintext-password to the Web Client URL for
+    # zero-click managed-fleet connect). See server/custom-server-image/.
+    image: ${RUSTDESK_SERVER_IMAGE:-ghcr.io/philippecaira/rustdesk-server-fleet:latest}
     container_name: remote-control-rustdesk
     restart: unless-stopped
     networks:

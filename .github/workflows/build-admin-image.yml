@@ -1,0 +1,56 @@
+name: Build admin-server image
+
+# Rebuilds the custom rustdesk-server image (lejianwen/rustdesk-server-s6
+# + our patched admin SPA from PhilippeCaira/rustdesk-api-web) and pushes
+# it to ghcr.io. The server stack docker-compose.yml pulls from there.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'server/custom-server-image/**'
+      - '.github/workflows/build-admin-image.yml'
+  schedule:
+    # Weekly, to pick up upstream lejianwen image + fork rebases without
+    # needing a manual nudge. Tuesday 04:00 UTC — quiet window.
+    - cron: '0 4 * * 2'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          # Owner is lowercased for GHCR.
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${owner}/rustdesk-server-fleet" >> "$GITHUB_OUTPUT"
+          echo "sha=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: server/custom-server-image
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.tags.outputs.image }}:latest
+            ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
