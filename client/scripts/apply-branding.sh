@@ -177,6 +177,7 @@ grep -qF "\"${API_SERVER}\".to_owned()" "$COMMON_RS" \
 # 4. Inject product identity (user-visible branding).
 # ---------------------------------------------------------------------------
 APP_NAME_ESC=$(sed_escape "$BRAND_APP_NAME")
+APP_NAME_ESC_LOWER=$(sed_escape "$(printf '%s' "$BRAND_APP_NAME" | tr '[:upper:]' '[:lower:]')")
 ORG_ESC=$(sed_escape "$BRAND_ORG")
 ANDROID_APP_ID_ESC=$(sed_escape "$BRAND_ANDROID_APP_ID")
 MACOS_BUNDLE_ID_ESC=$(sed_escape "$BRAND_MACOS_BUNDLE_ID")
@@ -231,6 +232,27 @@ grep -qE "^PRODUCT_NAME *= *${BRAND_APP_NAME}\$"            "$MACOS_XCCONFIG" \
     || fail "PRODUCT_NAME substitution failed in $MACOS_XCCONFIG"
 grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCCONFIG" \
     || fail "PRODUCT_BUNDLE_IDENTIFIER substitution failed in $MACOS_XCCONFIG"
+
+# 4.3b Windows VERSIONINFO — flutter/windows/runner/Runner.rc
+# Drives the string Windows shows in the "This site wants to open X"
+# popup when the rustdesk:// (= <brand>://) URI fires, plus the
+# Properties > Details panel on the .exe. Upstream bakes "RustDesk
+# Remote Desktop", "Purslane Ltd", "rustdesk.exe", etc. — patch them
+# so the UX matches our brand from the first click.
+WIN_RUNNER_RC="$UPSTREAM/flutter/windows/runner/Runner.rc"
+log "patching $WIN_RUNNER_RC (VERSIONINFO)"
+sed -i.sedbak -E \
+    -e "s|VALUE \"CompanyName\", \"Purslane Ltd\"|VALUE \"CompanyName\", \"${ORG_ESC}\"|" \
+    -e "s|VALUE \"FileDescription\", \"RustDesk Remote Desktop\"|VALUE \"FileDescription\", \"${APP_NAME_ESC} Remote Desktop\"|" \
+    -e "s|VALUE \"InternalName\", \"rustdesk\"|VALUE \"InternalName\", \"${APP_NAME_ESC_LOWER}\"|" \
+    -e "s|VALUE \"LegalCopyright\", \"[^\"]*\"|VALUE \"LegalCopyright\", \"${COPYRIGHT_ESC}\"|" \
+    -e "s|VALUE \"OriginalFilename\", \"rustdesk\\.exe\"|VALUE \"OriginalFilename\", \"${APP_NAME_ESC}.exe\"|" \
+    -e "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"${APP_NAME_ESC}\"|" \
+    "$WIN_RUNNER_RC"
+grep -qF "\"FileDescription\", \"${BRAND_APP_NAME} Remote Desktop\"" "$WIN_RUNNER_RC" \
+    || fail "FileDescription substitution failed in $WIN_RUNNER_RC"
+grep -qF "\"ProductName\", \"${BRAND_APP_NAME}\"" "$WIN_RUNNER_RC" \
+    || fail "ProductName substitution failed in $WIN_RUNNER_RC"
 
 # 4.4 Auto-update endpoint and Windows MSI filename pattern.
 #
