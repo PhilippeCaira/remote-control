@@ -247,26 +247,12 @@ grep -qE "^PRODUCT_BUNDLE_IDENTIFIER *= *${BRAND_MACOS_BUNDLE_ID}\$" "$MACOS_XCC
 # Remote Desktop", "Purslane Ltd", "rustdesk.exe", etc. — patch them
 # so the UX matches our brand from the first click.
 WIN_RUNNER_RC="$UPSTREAM/flutter/windows/runner/Runner.rc"
-# 4.3c Cargo.toml version — gen_version() in hbb_common rewrites
-# src/version.rs from the `version = "..."` line in Cargo.toml at build
-# time. Stamping our release tag as semver build-metadata
-# ("1.4.6+v0.0.25") makes hbb_common::VERSION carry it all the way to
-# the admin UI's peer.version column without breaking semver-aware
-# comparisons elsewhere in the code (build metadata is ignored by
-# ord-style checks per semver.org spec).
-if [[ -n "$RELEASE_TAG" ]]; then
-    CARGO_TOML="$UPSTREAM/Cargo.toml"
-    # Keep the upstream version, append +<tag> only if not already stamped
-    if ! grep -qE "^version *= *\"[^\"]*\\+" "$CARGO_TOML"; then
-        TAG_ESC=$(sed_escape "$RELEASE_TAG")
-        log "stamping RELEASE_TAG=$RELEASE_TAG into $CARGO_TOML"
-        sed -i.sedbak -E "0,/^version *= *\"([^\"]+)\"/s//version = \"\\1+${TAG_ESC}\"/" "$CARGO_TOML"
-        grep -qE "^version *= *\"[0-9.]+\\+${TAG_ESC}\"" "$CARGO_TOML" \
-            || fail "RELEASE_TAG stamp failed in $CARGO_TOML"
-    else
-        log "Cargo.toml version already carries a +metadata tag; skipping"
-    fi
-fi
+# Cargo.toml is intentionally NOT patched with RELEASE_TAG: WiX's ICE24
+# rejects any ProductVersion that isn't strictly numeric (major.minor.build
+# [.revision]), so a '1.4.6+v0.0.25' semver-metadata suffix breaks the MSI
+# build. We surface the tag via the peer's AB alias instead (see
+# inject-admin-pw.py — the alias is shown in the admin UI address book
+# column which is what operators actually look at).
 
 log "patching $WIN_RUNNER_RC (VERSIONINFO)"
 sed -i.sedbak -E \
@@ -324,12 +310,15 @@ FLEET_USER_ESC=$(sed_escape "$BRAND_FLEET_USER")
 FLEET_PASSWORD_ESC=$(sed_escape "$BRAND_FLEET_PASSWORD")
 BRAND_APP_NAME_ESC_RE=$(sed_escape "$BRAND_APP_NAME")
 
+RELEASE_TAG_ESC=$(sed_escape "$RELEASE_TAG")
+
 log "patching fleet-register sentinels in $SERVER_RS"
 sed -i.sedbak -E \
     -e "s|\"__RDC_API_BASE__\"|\"${FLEET_API_BASE_ESC}\"|" \
     -e "s|\"__RDC_FLEET_USER__\"|\"${FLEET_USER_ESC}\"|" \
     -e "s|\"__RDC_FLEET_PASSWORD__\"|\"${FLEET_PASSWORD_ESC}\"|" \
     -e "s|\"__RDC_BRAND_APP_NAME__\"|\"${BRAND_APP_NAME_ESC_RE}\"|" \
+    -e "s|\"__RDC_RELEASE_TAG__\"|\"${RELEASE_TAG_ESC}\"|" \
     "$SERVER_RS"
 grep -qF "\"${FLEET_API_BASE}\"" "$SERVER_RS" \
     || fail "FLEET_API_BASE substitution failed in $SERVER_RS"

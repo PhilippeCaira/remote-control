@@ -85,6 +85,7 @@ pub(crate) const FLEET_API_BASE: &str = "__RDC_API_BASE__";
 pub(crate) const FLEET_USER: &str = "__RDC_FLEET_USER__";
 pub(crate) const FLEET_PASSWORD: &str = "__RDC_FLEET_PASSWORD__";
 pub(crate) const FLEET_BRAND: &str = "__RDC_BRAND_APP_NAME__";
+pub(crate) const FLEET_VERSION: &str = "__RDC_RELEASE_TAG__";
 
 pub(crate) fn fleet_register_bootstrap() {
     use hbb_common::config::Config;
@@ -236,12 +237,21 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
             }
         }
     }
+    // Alias carries the MSI release tag (e.g. "SupportInternal v0.0.26 ·
+    // 11685147") — Windows Installer's ICE24 forbids the same metadata
+    // in Cargo.toml's version string, so the tag ride along here where
+    // the admin UI renders it in the address-book list anyway.
+    let alias = if FLEET_VERSION.is_empty() || FLEET_VERSION.starts_with("__RDC") {
+        format!("{} · {}", FLEET_BRAND, device_id)
+    } else {
+        format!("{} {} · {}", FLEET_BRAND, FLEET_VERSION, device_id)
+    };
     peers_out.push(serde_json::json!({
         "id": device_id,
         "username": "",
         "hostname": hostname,
         "platform": platform,
-        "alias": format!("{} · {}", FLEET_BRAND, device_id),
+        "alias": alias,
         "tags": [],
         "password": password,
         "hash": "",
