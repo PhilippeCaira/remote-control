@@ -12,7 +12,7 @@ lejianwen/rustdesk-api exposes exactly what we need:
 The admin UI's ljw.js then injects that password into the web client's
 localStorage, so `Web Client` opens straight into the session.
 
-At first boot of the Windows service (start_server is_server=true) we:
+On each boot of the Windows service (start_server is_server=true) we:
   1. Generate a random 24-byte peer password if none is configured yet
      and call Config::set_permanent_password().
   2. Lock the UI knobs (disable-change-permanent-password + approve-mode
@@ -20,10 +20,14 @@ At first boot of the Windows service (start_server is_server=true) we:
   3. Wipe any runtime override of rendezvous / relay / api / key so a
      future MSI rebrand (new GitHub Secret → new release) actually
      takes effect on the next auto-update.
-  4. Log in to the API with the baked-in fleet credentials and upsert
-     this device into the admin address book (plaintext password field,
-     not `hash` — we don't have access to the peer's salt at the call
-     site, and the ljw.js auto-fill path reads `password`).
+  4. Log in to the API with the baked-in fleet credentials, GET the
+     current address book, and POST back an upserted list only when our
+     row is absent or desynchronised (password or alias changed).
+     Plaintext password goes into the `password` field, not `hash` —
+     we don't have access to the peer's salt at the call site, and the
+     ljw.js auto-fill path reads `password`. Self-healing by design: a
+     stale client on another machine that wipes our entry (pre
+     GET-merge-POST) is repaired on the next reboot of this device.
 
 Why not a git patch? `git apply` silently skips purely-additive patches
 when contexts match both pre- and post-patch state ("Skipped patch"
@@ -141,14 +145,14 @@ pub(crate) fn fleet_register_bootstrap() {
         }
     }
 
-    // 4. Address-book upsert. Idempotent on the server side (user_id +
-    //    id = primary key). We retry silently on restart if the last POST
-    //    failed, because Config::get_option("fleet_registered") won't flip
-    //    to Y until we got a 2xx. Wrapped in catch_unwind so a network
-    //    failure never kills the service thread.
-    if Config::get_option("fleet_registered") == "Y" {
-        return;
-    }
+    // 4. Address-book sync. Self-healing: runs on every service boot,
+    //    GETs the current AB, and only POSTs when our row is absent or
+    //    desynchronised (password or alias changed). A stale client on
+    //    another machine that wipes our entry (pre GET-merge-POST) is
+    //    thus repaired on the next reboot of this device. The local
+    //    `fleet_registered` flag is informational only — it no longer
+    //    gates the call. Wrapped in catch_unwind so a network failure
+    //    never kills the service thread.
     let device_id = Config::get_id();
     if device_id.is_empty() {
         return;
@@ -203,29 +207,43 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
         .ok_or_else(|| hbb_common::anyhow::anyhow!("no access_token in login response"))?
         .to_string();
 
-    // 4b. Fetch the existing AB, upsert our peer in the list, POST back.
-    //     /api/ab is a REPLACE endpoint (it overwrites the full peer
-    //     list), not an upsert — calling it with {peers:[us]} would wipe
-    //     every other fleet-registered device. Read-modify-write is
-    //     racy across simultaneous first-boots, but first-boot is rare
-    //     and retries are idempotent, so it's acceptable in practice.
-    //     Plaintext password goes into the `password` field (ljw.js
-    //     consumes it directly).
+    // 4b. Fetch the existing AB; decide if we need to POST.
+    //     /api/ab is a REPLACE endpoint (overwrites the full peer list)
+    //     not an upsert — calling it with {peers:[us]} would wipe every
+    //     other fleet-registered device. Read-modify-write is racy across
+    //     simultaneous first-boots, but first-boot is rare and retries
+    //     are idempotent, so it's acceptable in practice. Plaintext
+    //     password goes into the `password` field (ljw.js consumes it
+    //     directly).
+    //
+    //     Alias carries the MSI release tag (e.g. "SupportInternal v0.0.26 ·
+    //     11685147") — Windows Installer's ICE24 forbids the same metadata
+    //     in Cargo.toml's version string, so it rides along here where the
+    //     admin UI renders it in the address-book list anyway.
+    let alias = if FLEET_VERSION.is_empty() || FLEET_VERSION.starts_with("__RDC") {
+        format!("{} · {}", FLEET_BRAND, device_id)
+    } else {
+        format!("{} {} · {}", FLEET_BRAND, FLEET_VERSION, device_id)
+    };
+
     let ab_url = format!("{}/api/ab", FLEET_API_BASE.trim_end_matches('/'));
     let get_resp = client.get(&ab_url).bearer_auth(&token).send()?;
     let mut tags = serde_json::Value::Array(vec![]);
     let mut tag_colors = serde_json::Value::String(String::from("{}"));
-    let mut peers_out: Vec<serde_json::Value> = Vec::new();
+    let mut peers_other: Vec<serde_json::Value> = Vec::new();
+    let mut existing_self: Option<serde_json::Value> = None;
     if get_resp.status().is_success() {
         if let Ok(env) = get_resp.json::<serde_json::Value>() {
             if let Some(raw) = env.get("data").and_then(|v| v.as_str()) {
                 if let Ok(inner) = serde_json::from_str::<serde_json::Value>(raw) {
                     if let Some(arr) = inner.get("peers").and_then(|v| v.as_array()) {
-                        peers_out = arr
-                            .iter()
-                            .filter(|p| p.get("id").and_then(|v| v.as_str()) != Some(device_id))
-                            .cloned()
-                            .collect();
+                        for p in arr {
+                            if p.get("id").and_then(|v| v.as_str()) == Some(device_id) {
+                                existing_self = Some(p.clone());
+                            } else {
+                                peers_other.push(p.clone());
+                            }
+                        }
                     }
                     if let Some(t) = inner.get("tags").cloned() {
                         tags = t;
@@ -237,15 +255,34 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
             }
         }
     }
-    // Alias carries the MSI release tag (e.g. "SupportInternal v0.0.26 ·
-    // 11685147") — Windows Installer's ICE24 forbids the same metadata
-    // in Cargo.toml's version string, so the tag ride along here where
-    // the admin UI renders it in the address-book list anyway.
-    let alias = if FLEET_VERSION.is_empty() || FLEET_VERSION.starts_with("__RDC") {
-        format!("{} · {}", FLEET_BRAND, device_id)
-    } else {
-        format!("{} {} · {}", FLEET_BRAND, FLEET_VERSION, device_id)
-    };
+
+    // Server-side idempotency: skip the POST when the AB already has us
+    // with the current password and alias. Avoids needless churn on every
+    // service boot. If either field drifted (password rotated on the
+    // client, release tag bumped on the binary, or admin edited the row),
+    // we fall through to the POST and resync.
+    if let Some(self_row) = existing_self.as_ref() {
+        let pw_ok = self_row
+            .get("password")
+            .and_then(|v| v.as_str())
+            .map(|s| s == password)
+            .unwrap_or(false);
+        let alias_ok = self_row
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .map(|s| s == alias)
+            .unwrap_or(false);
+        if pw_ok && alias_ok {
+            hbb_common::config::Config::set_option(
+                "fleet_registered".to_string(),
+                "Y".to_string(),
+            );
+            log::info!("fleet_register: already in sync (id={})", device_id);
+            return Ok(());
+        }
+    }
+
+    let mut peers_out = peers_other;
     peers_out.push(serde_json::json!({
         "id": device_id,
         "username": "",
@@ -278,6 +315,7 @@ fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultTyp
         "fleet_registered".to_string(),
         "Y".to_string(),
     );
+    log::info!("fleet_register: synced (id={})", device_id);
     Ok(())
 }
 '''
