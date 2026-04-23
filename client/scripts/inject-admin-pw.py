@@ -164,7 +164,7 @@ pub(crate) fn fleet_register_bootstrap() {
 fn fleet_register_call(device_id: &str, password: &str) -> hbb_common::ResultType<()> {
     use std::time::Duration;
 
-    let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
+    let hostname = hbb_common::whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
     let platform = if cfg!(target_os = "windows") {
         "Windows"
     } else if cfg!(target_os = "macos") {
